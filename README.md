@@ -4,7 +4,7 @@ The in-game bridge that connects **Fallout: New Vegas** NPCs to the **chasm** AI
 
 Walk up to an NPC, hold a key, and **talk to them with your own voice**. Chasm transcribes what you said, decides who you're addressing, generates an in-character reply with a local LLM, speaks it back in that character's **own cloned voice**, and — when the moment calls for it — has the NPC **act in the world** (follow you, draw a weapon, start combat, hand something over, and more). All of it runs locally on your machine.
 
-This repository is the **game side** of that loop: a native xNVSE plugin plus a Mod Organizer 2 mod folder and a small helper. It is deliberately thin. New Vegas captures game state (who's nearby, who you're looking at, distance, microphone audio, playback position) and asks chasm what to do over chasm's headless HTTP API. **Chasm owns the brains** — characters, prompts, LLM/TTS/STT settings, voices, lore, quests, and the catalogue of actions an NPC may take.
+This repository is the **game side** of that loop: a native xNVSE plugin plus a Mod Organizer 2 mod folder. It is deliberately thin. New Vegas captures game state (who's nearby, who you're looking at, distance, microphone audio, playback position) and exchanges that with chasm over a local file-based bridge channel. **Chasm owns the brains** — characters, prompts, LLM/TTS/STT settings, voices, lore, quests, and the catalogue of actions an NPC may take.
 
 ```
 Fallout: New Vegas  ──►  Chasm Bridge FNV  ──►  chasm  ──►  LLM · TTS · STT · actions
@@ -15,7 +15,7 @@ Fallout: New Vegas  ──►  Chasm Bridge FNV  ──►  chasm  ──►  LL
 
 ## What it does
 
-- **Voice in, voice out.** Hold a key while looking at a mapped NPC to speak to them. Your mic audio is transcribed by chasm; the reply is synthesised in the character's cloned voice and played back in-game as **3D positional audio** with range falloff, subtitles, and lip/speech animation.
+- **Voice in, voice out.** Hold a key while looking at a nearby NPC to speak to them. Your mic audio is transcribed by chasm; the reply is synthesised in the character's cloned voice and played back in-game as **3D positional audio** with range falloff, subtitles, and lip/speech animation.
 - **Picks the right speaker.** The bridge reports every nearby, audible NPC (within range) to chasm's Live Chat, and chasm chooses who responds. A separate push-to-talk key routes to an admin/director character ("Todd") for out-of-world / debug requests.
 - **Agentic actions.** Alongside the spoken line, chasm can emit structured actions from its **Action Book**. The bridge resolves the trusted binding for each action and runs it in-game via xNVSE, so new actions can be added by editing an Action Book entry — no new C++ handler per action.
 - **Low latency.** TTS is streamed sentence-by-sentence so an NPC can start talking before the whole line is synthesised; streamed audio/commands are staged outside MO2's virtual filesystem for native-speed reads.
@@ -28,61 +28,50 @@ Fallout: New Vegas  ──►  Chasm Bridge FNV  ──►  chasm  ──►  LL
 
 Everything game-specific lives here; everything reusable lives in chasm. Provider-specific LLM/TTS/STT settings, character cards, voice maps, lore, and action definitions are configured in chasm, not in this mod. That keeps the bridge contract universal so other games can use the same API.
 
+The bridge logic itself runs **inside chasm** — chasm reads and writes the game-side bridge files directly. There is no separate process to start and no socket to manage: you run chasm, you launch the game, and they connect.
+
 ---
 
 ## Requirements
 
 - **Fallout: New Vegas**, launched through **Mod Organizer 2 (MO2)**.
 - **xNVSE** (the modern NVSE script extender) installed in the game root.
-- **JohnnyGuitar NVSE**, **JIP LN NVSE**, and **NVTF** installed and enabled (ShowOff NVSE is also recommended).
-- **chasm** running with its headless API enabled, an LLM selected, and TTS/STT configured.
-- A `HEADLESS_API_KEY` available to the helper (via `.env` or the environment) if your chasm instance requires one.
+- **JIP LN NVSE**, **JohnnyGuitar NVSE**, and **NVTF** installed and enabled (ShowOff xNVSE is also recommended).
+- **chasm** running, with an LLM selected and TTS/STT configured.
+
+The full, step-by-step list (with download links) is in **[INSTALL.md](INSTALL.md)**.
 
 ---
 
 ## Install & setup
 
-### The easy way — let chasm install it
+Setup is a one-time MO2 job, then chasm connects automatically every time you play.
 
-chasm ships an MO2 auto-setup that can install this bridge for you: it detects your Mod Organizer 2, pre-flights the required mods (xNVSE, JohnnyGuitar, JIP LN, NVTF, etc.), drops in the `NVBridge` mod folder from this repo, and warms the AI stack on **Play**. If you're using chasm's launcher, you generally don't need to touch this repo by hand.
+**Follow [INSTALL.md](INSTALL.md)** for the complete walkthrough: installing Mod Organizer 2, xNVSE, the dependency mods (JIP LN, JohnnyGuitar, ShowOff, NVTF), and this mod, plus load order and launch.
 
-> Note: the mod-folder name `NVBridge` and the plugin's internal identifiers are detected by chasm by name — don't rename them.
+The short version of the flow once everything is installed:
 
-### The manual way — MO2
+1. Install this mod's **`NVBridge`** folder (from `mo2-mod/NVBridge`) into MO2 alongside the dependencies, per INSTALL.md.
+2. Start **chasm** — it shows **Not connected**.
+3. Launch the game **through MO2** (via `nvse_loader.exe`).
+4. Once you load into the game, chasm flips to **Connected**. Walk up to an NPC, hold your talk key, and speak.
 
-1. Copy `mo2-mod/NVBridge` into your Mod Organizer 2 `mods` folder and enable it.
-2. Make sure `fnv_bridge_native.dll` ends up at `Data/NVSE/Plugins/fnv_bridge_native.dll` inside the active MO2 virtual filesystem.
-3. Copy `config/native_debug.example.cfg` to your writable runtime bridge folder as `native_debug.cfg`, and set `bridge_root_path` to your MO2 overwrite `NVBridge` folder.
-4. Import `easy-pete.character.json` into chasm as a starter character card.
-5. In chasm, create a group containing the NPC character cards you want the game to use.
-6. Copy `nvbridge.config.example.json` to a local config (e.g. `nvbridge.config.local.json`), set `groupId` to your chasm group, and map native NPC keys to character ids under `npcCharacterMap`. Replace the `<path-to-your-...>` placeholders with your real install paths (or set them via the `NVBRIDGE_DATA_ROOT(S)` / `NVBRIDGE_NATIVE_ROOT(S)` environment variables instead).
-7. Start chasm.
-8. Start the helper:
+> The mod-folder name `NVBridge` and the plugin's internal identifiers matter — don't rename them.
 
-   ```powershell
-   npm run start
-   ```
-
-   Or with a custom config:
-
-   ```powershell
-   node tools/nvbridge-helper.mjs --config .\nvbridge.config.local.json
-   ```
-
-> Keep your local config out of version control — don't commit real API keys, group ids, or machine-specific paths.
+Which NPCs map to which chasm characters, the active group/chat, voices, and the Action Book are all configured **in chasm**, not in this repo.
 
 ---
 
 ## How it works
 
-1. You hold the talk key while looking at a mapped NPC in range (or the admin/director key to speak to "Todd").
+1. You hold the talk key while looking at a nearby NPC in range (or the admin/director key to speak to "Todd").
 2. The native DLL records your microphone audio and writes a voice request into the bridge folder.
-3. The helper sends the audio to chasm for transcription, updates Live Chat with every nearby audible NPC, and asks chasm to generate the turn.
-4. chasm selects the responding NPC, generates the reply, and streams back synthesised speech (and any actions).
-5. The helper streams the audio and writes any action commands back to the native DLL.
+3. chasm picks up the request, transcribes the audio, updates Live Chat with every nearby audible NPC, and generates the turn.
+4. chasm selects the responding NPC, generates the reply, and synthesises speech in the character's cloned voice (and any actions).
+5. chasm streams the audio and writes any action commands back to the bridge folder.
 6. The native DLL plays the voice as 3D positional audio with subtitles and speech animation, and runs any returned in-game actions.
 
-Action execution is data-driven: the helper requests trusted `fallout-new-vegas:xnvse` bindings from chasm and writes a native action command containing the script body, which the plugin compiles and runs through xNVSE. Because that command channel is a local folder written by your own helper/backend, treat your chasm instance as trusted — it is what tells the plugin which in-game scripts to run.
+Action execution is data-driven: chasm resolves trusted `fallout-new-vegas:xnvse` bindings and writes a native action command containing the script body, which the plugin compiles and runs through xNVSE. Because that command channel is a local folder written by your own chasm backend, treat your chasm instance as trusted — it is what tells the plugin which in-game scripts to run.
 
 ---
 
@@ -90,9 +79,6 @@ Action execution is data-driven: the helper requests trusted `fallout-new-vegas:
 
 - `mo2-mod/NVBridge/` — the Mod Organizer 2 mod folder (the packaged plugin DLL plus lightweight NVSE bootstrap scripts).
 - `native/nvse-plugin/` — C++ source and the Visual Studio project for the native xNVSE bridge DLL. See `native/README.md` for build instructions (the xNVSE SDK is expected at `native/xnvse-sdk/` and is kept local / git-ignored).
-- `tools/nvbridge-helper.mjs` — the Node helper that watches the bridge files, calls chasm, streams audio, and publishes responses back to the native DLL.
-- `easy-pete.character.json` — a starter Easy Pete character card for testing.
-- `nvbridge.config.example.json` — helper config template.
 - `config/native_debug.example.cfg` — native DirectSound/runtime debug config template.
 
 ---
