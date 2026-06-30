@@ -29,8 +29,8 @@ The result: chasm is a clean standalone app; each game brings its own brain.
 
 A profile bundle is **one folder**, named by the profile id (e.g.
 `fallout-new-vegas/`). The on-disk layout deliberately mirrors the per-profile layout
-chasm already resolves in `crates/sillybridge-core/src/profiles.rs`
-(`ProfilePaths`) and reads in `crates/sillybridge-st-compat/src/sources.rs`, so an
+chasm already resolves in `crates/chasm-core/src/profiles.rs`
+(`ProfilePaths`) and reads in `crates/chasm-st-compat/src/sources.rs`, so an
 imported bundle loads **as-is** with no transformation:
 
 ```
@@ -67,7 +67,7 @@ wins over the legacy `{data_root}/<subdir>` automatically once the folder is pre
 
 ### `profile.json` (manifest)
 
-Parsed by `GameProfile` (`crates/sillybridge-core/src/profiles.rs`). Known fields are
+Parsed by `GameProfile` (`crates/chasm-core/src/profiles.rs`). Known fields are
 `id`, `name`, `description`, `characters[]`; **any other top-level keys are preserved
 losslessly** via serde `flatten` into `extra` (the model and its round-trip test
 explicitly keep `voice` and `comment`).
@@ -152,7 +152,7 @@ The same folder is the **drag-and-drop unit**: a user can drag
 ## Chasm-side import (design)
 
 Two import paths, both landing the bundle in chasm's `profiles_dir`
-(`SILLYBRIDGE_PROFILES_DIR`, else `{workspace_root}/profiles`). Both are **game-agnostic**:
+(`CHASM_PROFILES_DIR`, else `{workspace_root}/profiles`). Both are **game-agnostic**:
 chasm never hard-codes "Fallout"; it just copies validated bundle folders.
 
 ### A. Mod-boot copy (automatic)
@@ -228,17 +228,17 @@ the copy once and call it from both.
 
 ## Chasm-side implementation checklist
 
-Concrete, ordered work for the follow-up in the **chasm** repo (`sillybridge-rs`).
+Concrete, ordered work for the follow-up in the **chasm** repo.
 File references are to the current code read while writing this spec.
 
 1. **Manifest fields (optional, additive).** In
-   `crates/sillybridge-core/src/profiles.rs`, the new keys (`bundleVersion`, `game`,
+   `crates/chasm-core/src/profiles.rs`, the new keys (`bundleVersion`, `game`,
    `voice`, `comment`) already round-trip via `GameProfile.extra` (serde `flatten`).
    If first-class access is wanted, add typed optional fields
    (`bundle_version: Option<u32>`, `game: Option<String>`) with `#[serde(default)]`;
    otherwise read them from `extra`. No format change required.
 
-2. **Importer module.** Add `crates/sillybridge-core/src/profile_import.rs` exposing:
+2. **Importer module.** Add `crates/chasm-core/src/profile_import.rs` exposing:
    - `fn import_bundle(source_bundle_dir: &Path, profiles_dir: &Path, opts) -> Result<ImportOutcome>`
      — validate `profile.json`, slug-check `id`, version-compare against
      `profiles/<id>/`, copy the **allowlisted** content subdirs only, atomic
@@ -252,7 +252,7 @@ File references are to the current code read while writing this spec.
 
 3. **Mod-boot trigger.** Where chasm flips to **Connected** (the heartbeat/PID
    connection lifecycle — see the recent "Tie game connection to the plugin PID" and
-   "Auto-manage AI stack from the game connection" commits in `sillybridge-rs`), call
+   "Auto-manage AI stack from the game connection" commits in the chasm repo), call
    `import_from_source_root` **once per connection** against the resolved profile source:
    - Resolve source via convention `<bridge_root>/../chasm-profile/` (FNV layout:
      `NVBridge/chasm-profile/`), with an optional `profileSource` override read from the
@@ -263,11 +263,11 @@ File references are to the current code read while writing this spec.
      id and persist (`AppSettings::save`), so `active_profile_paths()` immediately
      resolves into the new profile.
 
-4. **Drag-and-drop endpoint + UI.** In `crates/sillybridge-web`:
+4. **Drag-and-drop endpoint + UI.** In `crates/chasm-web`:
    - Add a route (e.g. `POST /api/profiles/import`) that accepts a folder path (native
      shell drop) or an uploaded archive, then calls the importer.
    - Add the drop target to the Profiles settings page
-     (`crates/sillybridge-web/src/ui/settings.rs`, profiles category — the nav group
+     (`crates/chasm-web/src/ui/settings.rs`, profiles category — the nav group
      already exists). Show import result (Installed/Updated/Skipped) and refresh the
      profile list.
 

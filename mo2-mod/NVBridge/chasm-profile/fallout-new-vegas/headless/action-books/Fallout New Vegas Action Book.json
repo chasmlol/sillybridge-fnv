@@ -5628,7 +5628,7 @@
         "runtimeRequiresAllowlist": true
     },
     "extensions": {
-        "sillybridge": {
+        "chasm": {
             "type": "action-book",
             "version": 1
         }
@@ -5637,7 +5637,7 @@
         "engine": "fallout-new-vegas:xnvse",
         "adapter": "nvbridge",
         "executor": "xnvse-function-script",
-        "protocol": "sillybridge.action-book.execution.v1",
+        "protocol": "chasm.action-book.execution.v1",
         "version": 1,
         "argumentBindings": {
             "actor": "native:npc_ref",

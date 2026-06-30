@@ -2186,10 +2186,10 @@
         }
     },
     "extensions": {
-        "sillybridge": {
+        "chasm": {
             "targetGame": "Fallout: New Vegas",
             "sourceArchive": "fallout-wiki-archive",
-            "description": "Unified Fallout: New Vegas lorebook with Goodsprings area lore, Mojave basics, and NPC-scoped opinions for the live SillyBridge roster.",
+            "description": "Unified Fallout: New Vegas lorebook with Goodsprings area lore, Mojave basics, and NPC-scoped opinions for the live Chasm roster.",
             "updatedBy": "tools/fnv/seed-goodsprings-content.mjs",
             "updatedAt": "2026-06-21T21:38:59.819Z"
         }

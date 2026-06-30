@@ -155,7 +155,7 @@
                         "engine": "fallout-new-vegas:xnvse",
                         "adapter": "nvbridge",
                         "executor": "xnvse-function-script",
-                        "protocol": "sillybridge.quest-book.execution.v1",
+                        "protocol": "chasm.quest-book.execution.v1",
                         "version": 1
                     },
                     "execution": {
@@ -229,7 +229,7 @@
         "runtimeRequiresValidatedQuestBindings": true
     },
     "extensions": {
-        "sillybridge": {
+        "chasm": {
             "type": "quest-book",
             "version": 1
         }
