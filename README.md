@@ -60,9 +60,12 @@ Do this for **JIP LN**, **JohnnyGuitar NVSE**, **ShowOff xNVSE**, and **NVTF**:
 
 ## Step 4 — Install Chasm Bridge FNV (this mod)
 
-1. Download this repo: green **Code → Download ZIP** at the top of this page.
-2. Inside the download, the mod is the **`mo2-mod/NVBridge`** folder. Zip up that **`NVBridge`** folder.
-3. In MO2 → **Install a new mod from an archive** → select your zip → keep the name **`NVBridge`** → enable it.
+**Easiest — from the latest [Release](../../releases):**
+
+1. Download **`NVBridge.zip`** from the Releases page.
+2. In MO2 → **Install a new mod from an archive** → select `NVBridge.zip` → keep the name **`NVBridge`** → enable it.
+
+**Or from source:** download this repo (green **Code → Download ZIP**), zip up the **`mo2-mod/NVBridge`** folder, and install that through MO2 the same way.
 
 > The mod-folder name `NVBridge` and the plugin's internal identifiers matter — **don't rename them.**
 
