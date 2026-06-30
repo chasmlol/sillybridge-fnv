@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{6D80A7E4-CA57-48EF-BD62-47959B0A2F3C}</ProjectGuid>
+    <RootNamespace>fnv_bridge_native</RootNamespace>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <OutDir>$(ProjectDir)Release\</OutDir>
+    <IntDir>$(ProjectDir)Release\obj\</IntDir>
+    <TargetName>fnv_bridge_native</TargetName>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\xnvse-sdk;$(ProjectDir)..\xnvse-sdk\nvse;$(ProjectDir)..\xnvse-sdk\nvse\nvse;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;RUNTIME_VERSION=0x040020D0;RUNTIME;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <PrecompiledHeader />
+      <WarningLevel>Level3</WarningLevel>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ForcedIncludeFiles>nvse/prefix.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <OutputFile>$(OutDir)$(TargetName).dll</OutputFile>
+      <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <SubSystem>Windows</SubSystem>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <RandomizedBaseAddress>false</RandomizedBaseAddress>
+      <DataExecutionPrevention />
+      <TargetMachine>MachineX86</TargetMachine>
+      <AdditionalDependencies>dsound.lib;dxguid.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\containers.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameAPI.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameBSExtraData.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameData.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameExtraData.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameForms.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameObjects.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameOSDepend.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameProcess.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameRTTI.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameScript.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameSettings.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameTasks.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameTiles.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\GameTypes.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\NiTypes.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\printf.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\SafeWrite.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\Utilities.cpp" />
+    <ClCompile Include="..\xnvse-sdk\nvse\nvse\utility.cpp" />
+    <ClCompile Include="dllmain.c">
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="main.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\xnvse-sdk\common\common_vc9.vcxproj">
+      <Project>{20C6411C-596F-4B85-BE4E-8BC91F59D8A6}</Project>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="exports.def" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

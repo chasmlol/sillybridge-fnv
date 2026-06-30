@@ -1,0 +1,4 @@
+LIBRARY "fnv_bridge_native"
+EXPORTS
+NVSEPlugin_Query
+NVSEPlugin_Load

@@ -1,0 +1,31 @@
+; NVBridge in-game client.
+; Requires xNVSE, JIP LN NVSE, and JohnnyGuitar.
+; Native DLL owns Enter text chat, Alt speech-to-text, O Todd text chat, and H Todd speech-to-text.
+; Keep this bootstrap from binding Enter; the old "Talk" fallback can fire while
+; TextEditMenu is submitting and leave a duplicate stuck menu on-screen.
+; Keep lambdas small: xNVSE limits expression length inside parenthesis.
+
+ref rNBPoll
+ref rNBSound
+string_var sNBReady
+string_var sNBSound
+
+let rNBSound := TempCloneForm WPN10mmSMGFire3D
+WriteStringToFile "Data\nvse\plugins\Chasm\inbox\ready.txt" 0 "0"
+WriteStringToFile "Data\nvse\plugins\Chasm\inbox\r.txt" 0 "0"
+
+let rNBPoll := (begin Function {}
+    let sNBReady := ReadStringFromFile "Data\nvse\plugins\Chasm\inbox\r.txt"
+    if eval sNBReady == "1"
+        let sNBSound := ReadStringFromFile "Data\nvse\plugins\Chasm\inbox\s.txt"
+        SetSoundSourceFile rNBSound sNBSound
+        PlaySound rNBSound 1
+        PlaySound UIItemTakeAll 1
+        WriteStringToFile "Data\nvse\plugins\Chasm\inbox\d.txt" 0 "1"
+        WriteStringToFile "Data\nvse\plugins\Chasm\inbox\r.txt" 0 "0"
+    endif
+end)
+
+SetGameMainLoopCallback rNBPoll 1 30 1
+WriteStringToFile "Data\nvse\plugins\Chasm\debug_loaded.txt" 0 "loaded"
+Print "NVBridge bootstrap loaded. Native DLL owns text, voice, and Todd chat."

@@ -1,0 +1,40 @@
+{
+    "apiBase": "http://127.0.0.1:8000/api/headless/v1",
+    "liveChatId": "fnv-goodsprings",
+    "groupId": "replace-with-a-sillytavern-group-id-containing-your-mapped-npcs",
+    "characterId": "Easy Pete",
+    "characterName": "Easy Pete",
+    "participantId": "player",
+    "npcCharacterMap": {
+        "easy_pete": { "characterId": "Easy Pete", "characterName": "Easy Pete" },
+        "doc_mitchell": { "characterId": "Doc Mitchell", "characterName": "Doc Mitchell" },
+        "sunny_smiles": { "characterId": "Sunny Smiles", "characterName": "Sunny Smiles" },
+        "chet": { "characterId": "Chet", "characterName": "Chet" },
+        "cheyenne": { "characterId": "Cheyenne", "characterName": "Cheyenne" },
+        "trudy": { "characterId": "Trudy", "characterName": "Trudy" },
+        "ringo": { "characterId": "Ringo", "characterName": "Ringo" },
+        "victor": { "characterId": "Victor", "characterName": "Victor" },
+        "joe_cobb": { "characterId": "Joe Cobb", "characterName": "Joe Cobb" },
+        "gssettlercm": { "characterId": "Goodsprings settler", "characterName": "Goodsprings settler", "nativeNpcName": "Goodsprings settler" },
+        "gssettlercf": { "characterId": "Goodsprings settler", "characterName": "Goodsprings settler", "nativeNpcName": "Goodsprings settler" },
+        "goodsprings_settler*": { "characterId": "Goodsprings settler", "characterName": "Goodsprings settler", "nativeNpcName": "Goodsprings settler" },
+        "powder_ganger*": { "characterId": "Powder Ganger", "characterName": "Powder Ganger", "nativeNpcName": "Powder Ganger" }
+    },
+    "model": "",
+    "maxDistanceGameUnits": 700,
+    "nativeMaxDistanceMeters": 10,
+    "pollMs": 750,
+    "dataRoots": [
+        "<path-to-your-ModOrganizer>\\New Vegas\\mods\\NVBridge",
+        "<path-to-your-ModOrganizer>\\New Vegas\\overwrite",
+        "<path-to-your-Fallout-New-Vegas>\\Data"
+    ],
+    "nativeBridgeRoots": [
+        "<path-to-your-ModOrganizer>\\New Vegas\\overwrite\\NVBridge"
+    ],
+    "tts": {},
+    "speechRecognition": {
+        "provider": "sillytavern",
+        "language": "en"
+    }
+}
