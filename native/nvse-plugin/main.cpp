@@ -878,22 +878,10 @@ fs::path RuntimeHeartbeatHistoryPath()
 
 fs::path DefaultStackLauncherPath()
 {
-    std::error_code ec;
-
-    const fs::path devPath = fs::path("C:/sillytavern-clean/tools/fnv-bridge/start_stack_if_needed.ps1");
-    if (fs::exists(devPath, ec))
-    {
-        return devPath;
-    }
-
-    ec.clear();
-    const fs::path packagedPath = RuntimeDir() / "Tools" / "FNVBridge" / "start_stack_if_needed.ps1";
-    if (fs::exists(packagedPath, ec))
-    {
-        return packagedPath;
-    }
-
-    return devPath;
+    // The stack is managed externally by chasm (it watches the heartbeat PID and
+    // brings the LLM/TTS/STT processes up and down). This packaged path remains
+    // only as a legacy fallback for the plugin's optional autostart_stack hook.
+    return RuntimeDir() / "Tools" / "FNVBridge" / "start_stack_if_needed.ps1";
 }
 
 fs::path ResolveStackLauncherPath(const std::string& configured)
@@ -2621,6 +2609,7 @@ void WriteRuntimeHeartbeatIfNeeded(bool force)
 
     std::ostringstream payload;
     payload << "{\n";
+    payload << "  \"pid\": " << static_cast<unsigned long>(GetCurrentProcessId()) << ",\n";
     payload << "  \"updated_at\": " << JsonEscape(NowIsoUtc()) << ",\n";
     payload << "  \"frame\": " << g_state.runtimeHeartbeatFrame << ",\n";
     payload << "  \"trace_request_id\": " << JsonEscape(g_state.traceRequestId) << ",\n";
