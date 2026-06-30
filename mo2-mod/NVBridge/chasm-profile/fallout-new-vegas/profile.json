@@ -1,0 +1,25 @@
+{
+    "id": "fallout-new-vegas",
+    "name": "Fallout: New Vegas",
+    "description": "Goodsprings starting area for Fallout: New Vegas. Ships with the Chasm Bridge FNV mod: the Goodsprings NPC roster as character cards, a unified Mojave/Goodsprings lorebook, the FNV action and quest books, and the generated entity/item spawn catalogs. Drop this folder into chasm (or let the mod copy it in) and the Goodsprings cast comes to life.",
+    "bundleVersion": 1,
+    "game": "fallout-new-vegas",
+    "comment": "Authored game content only. No chat logs, conversation history, live-chat state, voices, embeddings, or save-sync snapshots are bundled — those are per-user runtime data created by chasm on first use. Voice references/clones are configured in chasm, not shipped here.",
+    "voice": {
+        "plugin": "FalloutNV.esm",
+        "extractor": "extract_voices.py"
+    },
+    "characters": [
+        { "name": "Chet" },
+        { "name": "Doc Mitchell" },
+        { "name": "Easy Pete" },
+        { "name": "Goodsprings settler" },
+        { "name": "Joe Cobb" },
+        { "name": "Powder Ganger" },
+        { "name": "Ringo" },
+        { "name": "Sunny Smiles" },
+        { "name": "Todd" },
+        { "name": "Trudy" },
+        { "name": "Victor" }
+    ]
+}

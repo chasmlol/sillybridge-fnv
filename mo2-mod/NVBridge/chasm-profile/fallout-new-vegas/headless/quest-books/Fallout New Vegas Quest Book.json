@@ -1,0 +1,237 @@
+{
+    "id": "Fallout New Vegas Quest Book",
+    "name": "Fallout: New Vegas Quest Book",
+    "description": "Quest pre-dialogue and prompt-safe quest event metadata for Fallout: New Vegas. The model sees natural quest context and abstract quest events, never raw game commands.",
+    "entries": {
+        "0": {
+            "uid": 0,
+            "key": [
+                "Sunny Smiles",
+                "Back in the Saddle",
+                "training",
+                "teach me",
+                "show me",
+                "survive",
+                "shoot",
+                "shooting",
+                "gun",
+                "firearm",
+                "bottle",
+                "bottles",
+                "sarsaparilla",
+                "gecko",
+                "geckos",
+                "Goodsprings source",
+                "Prospector Saloon"
+            ],
+            "keysecondary": [
+                "Sunny",
+                "Goodsprings",
+                "quest",
+                "tutorial",
+                "help",
+                "learn",
+                "Mojave"
+            ],
+            "comment": "Sunny Smiles can offer Back in the Saddle",
+            "content": "Sunny Smiles can naturally offer the Courier practical survival training after Doc Mitchell sends them into Goodsprings. This starts with firearms practice behind the Prospector Saloon, then can continue into helping Sunny and Cheyenne clear geckos from the Goodsprings source.",
+            "constant": true,
+            "vectorized": true,
+            "selective": false,
+            "selectiveLogic": 0,
+            "order": 40,
+            "priority": 960,
+            "disable": false,
+            "caseSensitive": null,
+            "matchWholeWords": null,
+            "questId": "VCG02",
+            "questName": "Back in the Saddle",
+            "questEditorId": "VCG02",
+            "formId": "0010A214",
+            "targetGame": "fallout-new-vegas",
+            "questType": "tutorial",
+            "phase": "available",
+            "giverCharacterIds": [
+                "Sunny Smiles"
+            ],
+            "giverNpcKeys": [
+                "sunny_smiles",
+                "gs_sunny_smiles",
+                "gssunnysmiles"
+            ],
+            "relatedNpcKeys": [
+                "cheyenne",
+                "goodsprings_settler"
+            ],
+            "offerSummary": "Offer the player hands-on help learning to survive in the Mojave: first shoot empty Sunset Sarsaparilla bottles behind the Prospector Saloon, then ask if they want to come along and clear geckos from the Goodsprings source.",
+            "preDialogue": "Sunny should sound like a friendly, capable Goodsprings hunter and survival teacher. Keep it practical and local: she can say Doc Mitchell mentioned the Courier might need help, offer to show them the basics, and make the training feel like a favor from someone who knows the town rather than a detached tutorial.",
+            "acceptanceCues": [
+                "yes",
+                "sure",
+                "teach me",
+                "show me",
+                "I'm ready",
+                "let's do it",
+                "I could use the help",
+                "take me to the bottles",
+                "I'll help with the geckos"
+            ],
+            "refusalCues": [
+                "no",
+                "not now",
+                "later",
+                "I don't need help",
+                "end tutorial",
+                "skip it"
+            ],
+            "objectives": [
+                "Talk to Sunny Smiles in the Prospector Saloon.",
+                "Meet Sunny Smiles behind the Prospector Saloon.",
+                "Shoot 3 sarsaparilla bottles outside the Prospector Saloon.",
+                "Follow Sunny.",
+                "Kill the geckos at the well.",
+                "Talk to Sunny Smiles.",
+                "Kill the geckos at the other wells.",
+                "Talk to Sunny about your reward."
+            ],
+            "stageHints": [
+                {
+                    "stage": 3,
+                    "label": "Talk to Sunny Smiles in the Prospector Saloon."
+                },
+                {
+                    "stage": 4,
+                    "label": "Meet Sunny Smiles behind the Prospector Saloon."
+                },
+                {
+                    "stage": 10,
+                    "label": "Shoot 3 sarsaparilla bottles outside the Prospector Saloon."
+                },
+                {
+                    "stage": 20,
+                    "label": "Follow Sunny."
+                },
+                {
+                    "stage": 30,
+                    "label": "Kill the geckos at the well."
+                },
+                {
+                    "stage": 40,
+                    "label": "Talk to Sunny Smiles."
+                },
+                {
+                    "stage": 50,
+                    "label": "Kill the geckos at the other wells."
+                },
+                {
+                    "stage": 60,
+                    "label": "Talk to Sunny about your reward."
+                }
+            ],
+            "questEvents": [
+                {
+                    "actionId": "quest.offer",
+                    "label": "Offer Back in the Saddle",
+                    "description": "Use when Sunny explains the training opportunity without the player accepting yet.",
+                    "requiresPlayerConsent": false,
+                    "parameters": {
+                        "questId": "VCG02",
+                        "giver": "Sunny Smiles"
+                    },
+                    "binding": {},
+                    "execution": {}
+                },
+                {
+                    "actionId": "quest.accept",
+                    "label": "Player accepts Back in the Saddle",
+                    "description": "Use only after the player clearly agrees to Sunny's training.",
+                    "requiresPlayerConsent": true,
+                    "parameters": {
+                        "questId": "VCG02",
+                        "stage": 4,
+                        "giver": "Sunny Smiles"
+                    },
+                    "binding": {
+                        "engine": "fallout-new-vegas:xnvse",
+                        "adapter": "nvbridge",
+                        "executor": "xnvse-function-script",
+                        "protocol": "sillybridge.quest-book.execution.v1",
+                        "version": 1
+                    },
+                    "execution": {
+                        "templateId": "quest.accept.vcg02.stage4",
+                        "language": "geck/xnvse",
+                        "arguments": [],
+                        "script": "float fIssued\n\nBegin Function {}\n    let fIssued := 0\n    StartQuest VCG02\n    SetStage VCG02 4\n    let fIssued := 1\n    SetFunctionValue fIssued\nEnd"
+                    }
+                },
+                {
+                    "actionId": "quest.decline",
+                    "label": "Player declines or delays Back in the Saddle",
+                    "description": "Use when the player clearly refuses or says to do it later.",
+                    "requiresPlayerConsent": true,
+                    "parameters": {
+                        "questId": "VCG02",
+                        "giver": "Sunny Smiles"
+                    },
+                    "binding": {},
+                    "execution": {}
+                },
+                {
+                    "actionId": "quest.end_tutorial",
+                    "label": "Player asks to end the tutorial path",
+                    "description": "Use only when the player explicitly asks to end or skip the tutorial.",
+                    "requiresPlayerConsent": true,
+                    "parameters": {
+                        "questId": "VCG02",
+                        "giver": "Sunny Smiles"
+                    },
+                    "binding": {},
+                    "execution": {}
+                }
+            ],
+            "availableWhen": {
+                "statuses": [
+                    "unknown",
+                    "available",
+                    "not_started",
+                    "active"
+                ],
+                "maxStage": 60
+            },
+            "includeCompleted": false,
+            "vectorizableText": "Quest: Back in the Saddle\nEditor ID: VCG02\nForm ID: 0010A214\nGiven by: Sunny Smiles\nLocation: Goodsprings, Prospector Saloon, Goodsprings source\nQuest type: tutorial\nTopics: survival training, firearms, empty Sunset Sarsaparilla bottles, geckos, Cheyenne, Doc Mitchell, Mojave Wasteland\nWalkthrough: talk to Sunny Smiles, meet behind the Prospector Saloon, shoot 3 sarsaparilla bottles, follow Sunny, kill geckos at the well, talk to Sunny, clear the other wells, talk about the reward\nDialogue: Sunny is practical, friendly, local, hands-on, and offers to teach the Courier how to survive.",
+            "scopes": [
+                "global",
+                "game:fallout-new-vegas",
+                "character:Sunny Smiles",
+                "npc:sunny_smiles"
+            ],
+            "tags": [
+                "goodsprings",
+                "tutorial",
+                "quest",
+                "sunny-smiles",
+                "training"
+            ],
+            "include": [],
+            "exclude": [],
+            "sourceLinks": [
+                "https://fallout.fandom.com/wiki/Back_in_the_Saddle",
+                "https://fallout.fandom.com/wiki/Sunny_Smiles"
+            ],
+            "extensions": {}
+        }
+    },
+    "settings": {
+        "targetGame": "fallout-new-vegas",
+        "llmMayUseRawQuestCommands": false,
+        "runtimeRequiresValidatedQuestBindings": true
+    },
+    "extensions": {
+        "sillybridge": {
+            "type": "quest-book",
+            "version": 1
+        }
+    }
+}

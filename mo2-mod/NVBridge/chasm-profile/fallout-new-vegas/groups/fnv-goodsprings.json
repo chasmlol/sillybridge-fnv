@@ -1,0 +1,35 @@
+{
+    "id": "fnv-goodsprings",
+    "name": "Fallout New Vegas - Goodsprings",
+    "members": [
+        "Easy Pete.png",
+        "Doc Mitchell.png",
+        "Sunny Smiles.png",
+        "Trudy.png",
+        "Chet.png",
+        "Ringo.png",
+        "Joe Cobb.png",
+        "Victor.png",
+        "Goodsprings settler.png",
+        "Powder Ganger.png"
+    ],
+    "avatar_url": null,
+    "allow_self_responses": false,
+    "activation_strategy": 0,
+    "generation_mode": 0,
+    "disabled_members": [],
+    "fav": false,
+    "chat_id": "Goodsprings",
+    "chats": [
+        "fnv-goodsprings",
+        "Goodsprings",
+        "Goodsprings (1)"
+    ],
+    "auto_mode_delay": 5,
+    "generation_mode_join_prefix": "",
+    "generation_mode_join_suffix": "",
+    "date_added": 1781902167160.963,
+    "create_date": "2026-06-19T20:49:27.160Z",
+    "date_last_chat": 1781902733733,
+    "chat_size": 2727
+}
