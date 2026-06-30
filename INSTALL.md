@@ -21,7 +21,7 @@ Everything below is free. Allow ~20–30 minutes the first time.
 | **JohnnyGuitar NVSE** | core scripting functions | https://github.com/carxt/JohnnyGuitarNVSE/releases |
 | **ShowOff xNVSE** | extra scripting functions | https://github.com/Demorome/ShowOff-NVSE/releases |
 | **NVTF** (New Vegas Tick Fix) | stability + performance | https://www.nexusmods.com/newvegas/mods/66537 |
-| **Chasm Bridge FNV** (this mod) | the bridge that connects FNV to chasm | https://github.com/chasmlol/sillybridge-fnv |
+| **Chasm Bridge FNV** (this mod) | the bridge that connects FNV to chasm | https://github.com/chasmlol/chasm-bridge-fnv |
 
 ---
 
@@ -51,7 +51,7 @@ Do this for **JIP LN**, **JohnnyGuitar NVSE**, **ShowOff xNVSE**, and **NVTF**:
 
 ## Step 4 — Install Chasm Bridge FNV (this mod)
 
-1. Download this repo: green **Code → Download ZIP** at https://github.com/chasmlol/sillybridge-fnv.
+1. Download this repo: green **Code → Download ZIP** at https://github.com/chasmlol/chasm-bridge-fnv.
 2. Inside the download, the mod is the **`mo2-mod/NVBridge`** folder. Zip up that **`NVBridge`** folder.
 3. In MO2 → **Install a new mod from an archive** → select your zip → keep the name **`NVBridge`** → enable it.
 
