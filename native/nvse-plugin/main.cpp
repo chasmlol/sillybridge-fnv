@@ -720,9 +720,58 @@ fs::path DataDir()
     return RuntimeDir() / "Data";
 }
 
+// Resolve a Win32 environment variable to a filesystem path (wide, so non-ASCII
+// user names survive). Returns an empty path if the variable is unset/empty.
+fs::path EnvPath(const wchar_t* name)
+{
+    DWORD needed = GetEnvironmentVariableW(name, nullptr, 0);
+    if (needed == 0)
+    {
+        return {};
+    }
+
+    std::wstring value(needed, L'\0');
+    const DWORD written = GetEnvironmentVariableW(name, value.data(), needed);
+    if (written == 0 || written >= needed)
+    {
+        return {};
+    }
+
+    value.resize(written);
+    if (value.empty())
+    {
+        return {};
+    }
+
+    return fs::path(value);
+}
+
+// Base dir for the chasm <-> plugin rendezvous, matching chasm's resolution EXACTLY:
+//   1. CHASM_BRIDGE_ROOT (if set & non-empty) is the FULL bridge path -> used as-is.
+//   2. otherwise <base>\chasm\bridge, where <base> is %LOCALAPPDATA%, else %APPDATA%,
+//      else the system temp dir.
+// This path lives OUTSIDE Mod Organizer 2's virtual filesystem, so the plugin's
+// writes land on real disk where the separate chasm process actually reads them.
 fs::path DefaultBridgeDir()
 {
-    return DataDir() / "NVBridge";
+    const fs::path override = EnvPath(L"CHASM_BRIDGE_ROOT");
+    if (!override.empty())
+    {
+        return override;
+    }
+
+    fs::path base = EnvPath(L"LOCALAPPDATA");
+    if (base.empty())
+    {
+        base = EnvPath(L"APPDATA");
+    }
+    if (base.empty())
+    {
+        std::error_code ec;
+        base = fs::temp_directory_path(ec);
+    }
+
+    return base / "chasm" / "bridge";
 }
 
 fs::path ResolveConfiguredRuntimePath(const std::string& rawPath)
@@ -821,7 +870,15 @@ fs::path SttInboxAudioPath()
 
 fs::path UiSubmitPath()
 {
-    return BridgeDir() / "ui_submit.txt";
+    // The in-game text-input channel. This file is produced by the embedded GECK
+    // callback script (EnsureInputCallbackScript) via the engine's WriteStringToFile,
+    // which can ONLY target a path relative to the game root -> Data/NVBridge. It is
+    // therefore pinned here rather than under BridgeDir(): chasm never reads or writes
+    // ui_submit.txt (it is purely the player-typed-text -> plugin path), so it does not
+    // belong to the chasm rendezvous layout. Keeping it game-relative keeps the writer
+    // (GECK script) and reader (this plugin) in agreement even though BridgeDir() now
+    // lives at %LOCALAPPDATA%\chasm\bridge.
+    return DataDir() / "NVBridge" / "ui_submit.txt";
 }
 
 fs::path OutboxPath()
@@ -2657,7 +2714,12 @@ void WriteDefaultDebugConfigIfMissing()
         << "autostart_stack=1\r\n"
         << "stack_bootstrap_cooldown_ms=15000\r\n"
         << "stack_launcher_path=" << DefaultStackLauncherPath().string() << "\r\n"
-        << "# bridge_root_path=C:/Users/your-user/AppData/Local/ModOrganizer/New Vegas/overwrite/NVBridge\r\n"
+        << "# bridge_root_path: optional override for the chasm <-> plugin rendezvous dir.\r\n"
+        << "# Default (when unset) is %LOCALAPPDATA%\\chasm\\bridge, shared with chasm\r\n"
+        << "# automatically and outside Mod Organizer 2's virtual filesystem. You normally\r\n"
+        << "# do NOT need to set this. To override, set this path or the CHASM_BRIDGE_ROOT\r\n"
+        << "# environment variable (CHASM_BRIDGE_ROOT, if set, wins and is the full path).\r\n"
+        << "# bridge_root_path=\r\n"
         << "# Dialogue-turn transport: file (default, NVBridge files) or http (chasm /api/game/v1/turn).\r\n"
         << "transport=file\r\n"
         << "http_host=127.0.0.1\r\n"
