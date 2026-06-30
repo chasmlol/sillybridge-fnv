@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cfloat>
 #include <cstdlib>
@@ -7,15 +8,18 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <deque>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
@@ -24,8 +28,10 @@
 #include <windows.h>
 #include <dsound.h>
 #include <mmsystem.h>
+#include <winhttp.h>
 
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "winhttp.lib")
 
 #include "common/ITypes.h"
 #include "nvse/containers.h"
@@ -499,8 +505,23 @@ struct RuntimeState
     VoiceCaptureState voiceCapture;
 };
 
+enum class BridgeTransport
+{
+    File,
+    Http,
+};
+
 struct DebugConfig
 {
+    // Dialogue-turn transport. File (default) writes/reads the NVBridge request/
+    // reply/chunk files exactly as before. Http POSTs the turn to chasm's
+    // /api/game/v1/turn and consumes the streaming NDJSON response on a worker
+    // thread. Only the dialogue turn moves to HTTP; save-sync + the durable
+    // control/actions queues stay on files regardless of this flag.
+    BridgeTransport transport = BridgeTransport::File;
+    std::string httpHost = "127.0.0.1";
+    int httpPort = 7341;
+    std::string httpTurnPath = "/api/game/v1/turn";
     bool runtimeHeartbeatEnabled = true;
     bool speechAnimationEnabled = true;
     bool speechWritePhonemeValues = true;
@@ -605,6 +626,7 @@ void ClearDialogSubtitle();
 bool ShowDialogSubtitle(const std::string& speaker, const std::string& text, float seconds);
 std::string ToUiAscii(std::string_view value);
 void InterruptBridgeReplyAndPlayback(const char* reason);
+void CancelHttpTurn();
 bool HasPendingChunkFiles();
 void ClearOutboxArtifacts(const char* reason);
 bool HasQueuedOrPlayingReply();
@@ -615,7 +637,7 @@ void RememberNpcTarget(const std::string& npcKey, const std::string& npcName, co
 std::optional<SpeakerSnapshot> ResolveSpeakerSnapshotForNpc(const std::string& npcKey, const std::string& npcName);
 SpeakerSnapshot CaptureSpeakerSnapshot(TESObjectREFR* ref);
 LocationSnapshot CapturePlayerLocation();
-bool WriteRequest(const std::string& npcKey, const std::string& npcName, const std::string& text, const LocationSnapshot& location, const std::string& metadataJson = "", bool clearSpeechSidecar = true);
+bool WriteRequest(const std::string& npcKey, const std::string& npcName, const std::string& text, const LocationSnapshot& location, const std::string& metadataJson = "", bool clearSpeechSidecar = true, const std::vector<BYTE>* httpVoiceWav = nullptr, bool nonPositionalHint = false);
 bool WriteVoiceRequest(const std::string& npcKey, const std::string& npcName, const SpeakerSnapshot& speaker, const std::vector<BYTE>& wavBytes, const LocationSnapshot& location, bool adminMode = false);
 DataHandler* GetDataHandler();
 std::string FormIdHex(UInt32 formId);
@@ -2185,6 +2207,328 @@ std::optional<std::string> DecodeBase64String(const std::string& input, size_t m
     return output;
 }
 
+std::string EncodeBase64(const unsigned char* data, size_t length)
+{
+    static const char kAlphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((length + 2) / 3) * 4);
+
+    size_t i = 0;
+    while (i + 3 <= length)
+    {
+        const unsigned int triple = (static_cast<unsigned int>(data[i]) << 16)
+            | (static_cast<unsigned int>(data[i + 1]) << 8)
+            | static_cast<unsigned int>(data[i + 2]);
+        out.push_back(kAlphabet[(triple >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 12) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 6) & 0x3F]);
+        out.push_back(kAlphabet[triple & 0x3F]);
+        i += 3;
+    }
+
+    const size_t remaining = length - i;
+    if (remaining == 1)
+    {
+        const unsigned int triple = static_cast<unsigned int>(data[i]) << 16;
+        out.push_back(kAlphabet[(triple >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 12) & 0x3F]);
+        out.push_back('=');
+        out.push_back('=');
+    }
+    else if (remaining == 2)
+    {
+        const unsigned int triple = (static_cast<unsigned int>(data[i]) << 16)
+            | (static_cast<unsigned int>(data[i + 1]) << 8);
+        out.push_back(kAlphabet[(triple >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 12) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 6) & 0x3F]);
+        out.push_back('=');
+    }
+
+    return out;
+}
+
+// --- Minimal JSON value extraction for the flat NDJSON turn events. -----------
+// chasm's /api/game/v1/turn streams one self-contained JSON object per line. We do
+// not need a general DOM: each event is a flat object whose values we read by key.
+// These helpers scan a single object literal (which may contain nested objects /
+// strings) and pull out a top-level field by name. They tolerate whitespace and
+// escaped characters inside strings, and skip over nested braces/brackets when
+// locating the matching top-level key. This is deliberately small + allocation-
+// light; it is NOT a validating parser.
+
+// Decode a JSON string literal body (the text between the surrounding quotes, with
+// the surrounding quotes already removed) into raw bytes, resolving \" \\ \/ \n \r
+// \t \b \f and \uXXXX (BMP; surrogate pairs combined to UTF-8).
+std::string JsonDecodeStringBody(const std::string& body)
+{
+    std::string out;
+    out.reserve(body.size());
+    for (size_t i = 0; i < body.size(); ++i)
+    {
+        const char ch = body[i];
+        if (ch != '\\')
+        {
+            out.push_back(ch);
+            continue;
+        }
+        if (i + 1 >= body.size())
+        {
+            break;
+        }
+        const char esc = body[++i];
+        switch (esc)
+        {
+        case '"': out.push_back('"'); break;
+        case '\\': out.push_back('\\'); break;
+        case '/': out.push_back('/'); break;
+        case 'n': out.push_back('\n'); break;
+        case 'r': out.push_back('\r'); break;
+        case 't': out.push_back('\t'); break;
+        case 'b': out.push_back('\b'); break;
+        case 'f': out.push_back('\f'); break;
+        case 'u':
+        {
+            if (i + 4 >= body.size())
+            {
+                i = body.size();
+                break;
+            }
+            auto readHex4 = [&](size_t at, unsigned int& outValue) -> bool {
+                unsigned int value = 0;
+                for (size_t k = 0; k < 4; ++k)
+                {
+                    const char hexCh = body[at + k];
+                    value <<= 4;
+                    if (hexCh >= '0' && hexCh <= '9') value |= static_cast<unsigned int>(hexCh - '0');
+                    else if (hexCh >= 'a' && hexCh <= 'f') value |= static_cast<unsigned int>(hexCh - 'a' + 10);
+                    else if (hexCh >= 'A' && hexCh <= 'F') value |= static_cast<unsigned int>(hexCh - 'A' + 10);
+                    else return false;
+                }
+                outValue = value;
+                return true;
+            };
+            unsigned int code = 0;
+            if (!readHex4(i + 1, code))
+            {
+                break;
+            }
+            i += 4;
+            if (code >= 0xD800 && code <= 0xDBFF && i + 6 < body.size() && body[i + 1] == '\\' && body[i + 2] == 'u')
+            {
+                unsigned int low = 0;
+                if (readHex4(i + 3, low) && low >= 0xDC00 && low <= 0xDFFF)
+                {
+                    code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                    i += 6;
+                }
+            }
+            if (code < 0x80)
+            {
+                out.push_back(static_cast<char>(code));
+            }
+            else if (code < 0x800)
+            {
+                out.push_back(static_cast<char>(0xC0 | (code >> 6)));
+                out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+            }
+            else if (code < 0x10000)
+            {
+                out.push_back(static_cast<char>(0xE0 | (code >> 12)));
+                out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+            }
+            else
+            {
+                out.push_back(static_cast<char>(0xF0 | (code >> 18)));
+                out.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+            }
+            break;
+        }
+        default:
+            out.push_back(esc);
+            break;
+        }
+    }
+    return out;
+}
+
+// Find the position just after the colon following "key" at the top level of the
+// object in [begin,end). Returns std::string::npos if the key is not present at the
+// top level. Nested objects/arrays/strings are skipped so a key inside an inner
+// object is not matched.
+size_t JsonFindTopLevelValue(const std::string& json, const std::string& key)
+{
+    const std::string needle = "\"" + key + "\"";
+    int depth = 0;
+    bool inString = false;
+    for (size_t i = 0; i < json.size(); ++i)
+    {
+        const char ch = json[i];
+        if (inString)
+        {
+            if (ch == '\\')
+            {
+                ++i; // skip escaped char
+            }
+            else if (ch == '"')
+            {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch == '"')
+        {
+            // Only consider keys at object depth 1 (immediate members of the root object).
+            if (depth == 1 && json.compare(i, needle.size(), needle) == 0)
+            {
+                size_t j = i + needle.size();
+                while (j < json.size() && (json[j] == ' ' || json[j] == '\t')) ++j;
+                if (j < json.size() && json[j] == ':')
+                {
+                    ++j;
+                    while (j < json.size() && (json[j] == ' ' || json[j] == '\t')) ++j;
+                    return j;
+                }
+            }
+            inString = true;
+            continue;
+        }
+        if (ch == '{' || ch == '[')
+        {
+            ++depth;
+        }
+        else if (ch == '}' || ch == ']')
+        {
+            --depth;
+        }
+    }
+    return std::string::npos;
+}
+
+// Read a top-level string field. Returns false if missing or not a string.
+bool JsonGetString(const std::string& json, const std::string& key, std::string& out)
+{
+    const size_t pos = JsonFindTopLevelValue(json, key);
+    if (pos == std::string::npos || pos >= json.size() || json[pos] != '"')
+    {
+        return false;
+    }
+    size_t i = pos + 1;
+    const size_t bodyStart = i;
+    for (; i < json.size(); ++i)
+    {
+        if (json[i] == '\\')
+        {
+            ++i;
+            continue;
+        }
+        if (json[i] == '"')
+        {
+            break;
+        }
+    }
+    if (i > json.size())
+    {
+        return false;
+    }
+    out = JsonDecodeStringBody(json.substr(bodyStart, i - bodyStart));
+    return true;
+}
+
+std::string JsonGetStringOr(const std::string& json, const std::string& key, const std::string& fallback = "")
+{
+    std::string value;
+    return JsonGetString(json, key, value) ? value : fallback;
+}
+
+// Read a top-level numeric field (returns false if missing / non-numeric).
+bool JsonGetNumber(const std::string& json, const std::string& key, double& out)
+{
+    const size_t pos = JsonFindTopLevelValue(json, key);
+    if (pos == std::string::npos || pos >= json.size())
+    {
+        return false;
+    }
+    size_t end = pos;
+    while (end < json.size())
+    {
+        const char ch = json[end];
+        if ((ch >= '0' && ch <= '9') || ch == '+' || ch == '-' || ch == '.' || ch == 'e' || ch == 'E')
+        {
+            ++end;
+        }
+        else
+        {
+            break;
+        }
+    }
+    if (end == pos)
+    {
+        return false;
+    }
+    out = std::atof(json.substr(pos, end - pos).c_str());
+    return true;
+}
+
+// Read a top-level boolean field (true/false). Returns fallback if missing.
+bool JsonGetBool(const std::string& json, const std::string& key, bool fallback)
+{
+    const size_t pos = JsonFindTopLevelValue(json, key);
+    if (pos == std::string::npos || pos >= json.size())
+    {
+        return fallback;
+    }
+    if (json.compare(pos, 4, "true") == 0)
+    {
+        return true;
+    }
+    if (json.compare(pos, 5, "false") == 0)
+    {
+        return false;
+    }
+    return fallback;
+}
+
+// Extract a nested object literal (including its braces) for a top-level key, so it
+// can be re-scanned with the same helpers. Returns false if the key's value is not
+// an object.
+bool JsonGetObject(const std::string& json, const std::string& key, std::string& out)
+{
+    const size_t pos = JsonFindTopLevelValue(json, key);
+    if (pos == std::string::npos || pos >= json.size() || json[pos] != '{')
+    {
+        return false;
+    }
+    int depth = 0;
+    bool inString = false;
+    for (size_t i = pos; i < json.size(); ++i)
+    {
+        const char ch = json[i];
+        if (inString)
+        {
+            if (ch == '\\') { ++i; }
+            else if (ch == '"') { inString = false; }
+            continue;
+        }
+        if (ch == '"') { inString = true; continue; }
+        if (ch == '{') { ++depth; }
+        else if (ch == '}')
+        {
+            --depth;
+            if (depth == 0)
+            {
+                out = json.substr(pos, i - pos + 1);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::string HashString64Hex(const std::string& value)
 {
     unsigned long long hash = 1469598103934665603ull;
@@ -2313,7 +2657,12 @@ void WriteDefaultDebugConfigIfMissing()
         << "autostart_stack=1\r\n"
         << "stack_bootstrap_cooldown_ms=15000\r\n"
         << "stack_launcher_path=" << DefaultStackLauncherPath().string() << "\r\n"
-        << "# bridge_root_path=C:/Users/your-user/AppData/Local/ModOrganizer/New Vegas/overwrite/NVBridge\r\n";
+        << "# bridge_root_path=C:/Users/your-user/AppData/Local/ModOrganizer/New Vegas/overwrite/NVBridge\r\n"
+        << "# Dialogue-turn transport: file (default, NVBridge files) or http (chasm /api/game/v1/turn).\r\n"
+        << "transport=file\r\n"
+        << "http_host=127.0.0.1\r\n"
+        << "http_port=7341\r\n"
+        << "http_turn_path=/api/game/v1/turn\r\n";
 }
 
 void LoadDebugConfigIfNeeded(bool force)
@@ -2511,6 +2860,41 @@ void LoadDebugConfigIfNeeded(bool force)
         else if (key == "bridge_root_path")
         {
             config.bridgeRootPath = value;
+        }
+        else if (key == "transport")
+        {
+            const std::string mode = ToLowerAscii(value);
+            if (mode == "http")
+            {
+                config.transport = BridgeTransport::Http;
+            }
+            else if (mode == "file")
+            {
+                config.transport = BridgeTransport::File;
+            }
+            // Any other value leaves the default (File) in place.
+        }
+        else if (key == "http_host")
+        {
+            if (!value.empty())
+            {
+                config.httpHost = value;
+            }
+        }
+        else if (key == "http_port")
+        {
+            const int port = std::atoi(value.c_str());
+            if (port > 0 && port <= 65535)
+            {
+                config.httpPort = port;
+            }
+        }
+        else if (key == "http_turn_path")
+        {
+            if (!value.empty() && value[0] == '/')
+            {
+                config.httpTurnPath = value;
+            }
         }
     }
 
@@ -5003,6 +5387,8 @@ void InterruptBridgeReplyAndPlayback(const char* reason)
     }
 
     ClearOutboxArtifacts(reason ? reason : "reply_interrupted");
+    // Abandon any in-flight HTTP turn so the worker's remaining output is discarded.
+    CancelHttpTurn();
 
     StopSpeechAnimation();
     ClearDialogSubtitle();
@@ -6812,7 +7198,699 @@ std::string ToUiAscii(std::string_view value)
     return out;
 }
 
-bool WriteRequest(const std::string& npcKey, const std::string& npcName, const std::string& text, const LocationSnapshot& location, const std::string& metadataJson, bool clearSpeechSidecar)
+// =====================================================================================
+// HTTP dialogue-turn transport (opt-in via DebugConfig.transport = http).
+//
+// Design / threading contract:
+//   * A WinHTTP POST to chasm's /api/game/v1/turn blocks while the LLM/TTS stream the
+//     NDJSON response, so it MUST NOT run on the game thread. A single persistent
+//     worker thread (g_httpWorkerThread) owns all blocking HTTP work.
+//   * The worker NEVER touches game state, DirectSound, the filesystem reply/chunk
+//     files, or any g_state field directly other than through the dedicated, mutex-
+//     guarded inbox below. It only:
+//       - parses each NDJSON line,
+//       - base64-decodes audio and stages the WAV to a temp file under AudioDir()
+//         (filesystem write to a private staging dir is thread-safe here; the main
+//         thread only ever reads these files by the path the worker hands it),
+//       - pushes QueuedAudioChunk / pending reply / pending action entries into
+//         g_httpInbox under g_httpMutex.
+//   * OnMainGameLoop drains g_httpInbox each frame (DrainHttpInbox) and feeds the
+//     SAME playback / reply / action code paths the file transport uses. Only the
+//     SOURCE of the queue entries changes.
+//   * A monotonically increasing generation id (g_httpActiveGeneration) tags the in-
+//     flight turn. WriteRequest bumps it before dispatch; any worker output whose
+//     generation does not match the current one is discarded (covers interrupts /
+//     a new turn started before the previous finished).
+// =====================================================================================
+
+struct HttpTurnRequest
+{
+    unsigned long long generation = 0;
+    std::string requestId;
+    std::string npcKey;
+    std::string npcName;
+    std::string url;          // full https/http URL to POST to
+    std::string body;         // JSON request body
+    bool nonPositionalHint = false; // admin/Todd => player-centered audio fallback
+};
+
+// A reply event captured from the stream, mirroring ResponsePayload's terminal fields.
+struct HttpPendingReply
+{
+    bool ok = false;
+    std::string requestId;
+    std::string npcKey;
+    std::string npcName;
+    std::string text;
+    std::string error;
+    std::string playerText;
+    std::string audioFile;     // staged temp WAV filename (under AudioDir()), if any
+    bool nonPositionalAudio = false;
+    std::string gameMasterAction;
+    double gameMasterConfidence = 0.0;
+    bool gameMasterShouldTrigger = false;
+    std::string actionNpcKey;
+    std::string actionNpcName;
+};
+
+// An action event captured from the stream (fired by the client; queued:false).
+struct HttpPendingAction
+{
+    std::string requestId;
+    std::string npcKey;
+    std::string npcName;
+    std::string action;
+    double confidence = 0.0;
+    bool shouldTrigger = true;
+    std::string actionId;
+    std::string actionNpcKey;
+    std::string actionNpcName;
+};
+
+struct HttpInbox
+{
+    std::deque<QueuedAudioChunk> audioChunks;
+    std::deque<HttpPendingAction> actions;
+    std::optional<HttpPendingReply> reply;     // terminal reply (set once per turn)
+    std::vector<std::string> partialCaptions;   // speech.delta text (recognized/streamed)
+    std::string recognizedPlayerText;           // transcript surfaced by the stream
+    bool sawActivity = false;                    // any event arrived (drives activity ticks)
+    bool finished = false;                       // turn.completed / turn.error / transport end
+};
+
+std::mutex g_httpMutex;
+HttpInbox g_httpInbox;                                  // guarded by g_httpMutex
+unsigned long long g_httpActiveGeneration = 0;          // guarded by g_httpMutex
+
+// Worker plumbing.
+std::thread g_httpWorkerThread;
+std::mutex g_httpJobMutex;
+std::condition_variable g_httpJobCv;
+std::optional<HttpTurnRequest> g_httpPendingJob;        // guarded by g_httpJobMutex
+std::atomic<bool> g_httpWorkerStop{ false };
+std::atomic<bool> g_httpWorkerStarted{ false };
+std::atomic<int> g_httpChunkSequence{ 0 };              // unique temp WAV filenames
+
+std::wstring Utf8ToWide(const std::string& input)
+{
+    if (input.empty())
+    {
+        return std::wstring();
+    }
+    const int needed = MultiByteToWideChar(CP_UTF8, 0, input.c_str(), static_cast<int>(input.size()), nullptr, 0);
+    if (needed <= 0)
+    {
+        return std::wstring();
+    }
+    std::wstring out(static_cast<size_t>(needed), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, input.c_str(), static_cast<int>(input.size()), out.data(), needed);
+    return out;
+}
+
+// Stage a decoded WAV blob to a private temp file under AudioDir() and return its
+// filename (relative to AudioDir(), matching how QueuedAudioChunk.wavPath is built).
+// Returns empty on failure. Runs on the WORKER thread.
+std::string StageHttpAudioWav(const std::string& requestId, int chunkIndex, const std::string& wavBytes)
+{
+    std::error_code ec;
+    fs::create_directories(AudioDir(), ec);
+    const int seq = g_httpChunkSequence.fetch_add(1);
+    std::ostringstream name;
+    name << "http_" << requestId << "_" << chunkIndex << "_" << seq << ".wav";
+    const std::string filename = name.str();
+    const fs::path path = AudioDir() / filename;
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out)
+    {
+        LogLine("HTTP transport failed to open staging WAV: %s", path.string().c_str());
+        return std::string();
+    }
+    out.write(wavBytes.data(), static_cast<std::streamsize>(wavBytes.size()));
+    out.flush();
+    if (!out.good())
+    {
+        LogLine("HTTP transport failed while writing staging WAV: %s", path.string().c_str());
+        std::error_code rmEc;
+        fs::remove(path, rmEc);
+        return std::string();
+    }
+    return filename;
+}
+
+// Parse ONE NDJSON event line and push results into g_httpInbox (under g_httpMutex).
+// `generation` is the turn this worker is serving; if it no longer matches the active
+// generation the results are dropped. Runs on the WORKER thread.
+void HandleHttpTurnEvent(const std::string& line, unsigned long long generation, const HttpTurnRequest& job)
+{
+    std::string type;
+    if (!JsonGetString(line, "type", type))
+    {
+        return;
+    }
+
+    if (type == "speech.delta")
+    {
+        std::string text;
+        JsonGetString(line, "text", text);
+        std::lock_guard<std::mutex> lock(g_httpMutex);
+        if (generation != g_httpActiveGeneration)
+        {
+            return;
+        }
+        g_httpInbox.sawActivity = true;
+        if (!text.empty())
+        {
+            g_httpInbox.partialCaptions.push_back(text);
+        }
+        return;
+    }
+
+    if (type == "audio.chunk")
+    {
+        double indexValue = 0.0;
+        const int chunkIndex = JsonGetNumber(line, "index", indexValue) ? static_cast<int>(indexValue) : -1;
+        std::string base64Wav;
+        std::string audioObj;
+        if (JsonGetObject(line, "audio", audioObj))
+        {
+            JsonGetString(audioObj, "data", base64Wav);
+        }
+        if (base64Wav.empty())
+        {
+            // Tolerate a flat "audio":"<base64>" shape as well.
+            JsonGetString(line, "audio", base64Wav);
+        }
+        if (base64Wav.empty())
+        {
+            return;
+        }
+
+        const auto decoded = DecodeBase64String(base64Wav, 32ull * 1024ull * 1024ull);
+        if (!decoded.has_value() || decoded->empty())
+        {
+            LogLine("HTTP transport dropped an audio.chunk with undecodable/oversized data.");
+            return;
+        }
+
+        std::string caption = JsonGetStringOr(line, "text");
+        std::string speakerKey = JsonGetStringOr(line, "npcKey", job.npcKey);
+        std::string speakerName = JsonGetStringOr(line, "npcName", job.npcName);
+        double captionMaxValue = 0.0;
+        const int captionMaxChars = JsonGetNumber(line, "captionMaxChars", captionMaxValue)
+            ? static_cast<int>(captionMaxValue)
+            : -1;
+        bool nonPositional = ToLowerAscii(speakerKey) == "todd" || job.nonPositionalHint;
+        std::string metaObj;
+        if (JsonGetObject(line, "metadata", metaObj))
+        {
+            nonPositional = JsonGetBool(metaObj, "non_positional_audio", nonPositional);
+            nonPositional = JsonGetBool(metaObj, "admin_voice", nonPositional);
+        }
+
+        const std::string filename = StageHttpAudioWav(job.requestId, chunkIndex, *decoded);
+        if (filename.empty())
+        {
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(g_httpMutex);
+        if (generation != g_httpActiveGeneration)
+        {
+            // Stale (turn was superseded). Remove the staged file we just wrote.
+            std::error_code rmEc;
+            fs::remove(AudioDir() / filename, rmEc);
+            return;
+        }
+        g_httpInbox.sawActivity = true;
+        g_httpInbox.audioChunks.push_back(QueuedAudioChunk{
+            job.requestId,
+            AudioDir() / filename,
+            filename,
+            speakerKey,
+            speakerName,
+            caption,
+            "",
+            chunkIndex,
+            nonPositional,
+            captionMaxChars,
+        });
+        return;
+    }
+
+    if (type == "action")
+    {
+        HttpPendingAction action;
+        action.requestId = job.requestId;
+        action.npcKey = job.npcKey;
+        action.npcName = job.npcName;
+        action.action = ToUpperAscii(JsonGetStringOr(line, "action"));
+        double confidence = 0.0;
+        action.confidence = JsonGetNumber(line, "confidence", confidence) ? confidence : 0.0;
+        action.shouldTrigger = JsonGetBool(line, "shouldTrigger", true);
+        action.actionId = JsonGetStringOr(line, "actionId");
+        std::string actorObj;
+        if (JsonGetObject(line, "actor", actorObj))
+        {
+            action.actionNpcKey = JsonGetStringOr(actorObj, "npcKey");
+            action.actionNpcName = JsonGetStringOr(actorObj, "npcName");
+        }
+        if (action.action.empty())
+        {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(g_httpMutex);
+        if (generation != g_httpActiveGeneration)
+        {
+            return;
+        }
+        g_httpInbox.sawActivity = true;
+        g_httpInbox.actions.push_back(std::move(action));
+        return;
+    }
+
+    if (type == "reply")
+    {
+        HttpPendingReply reply;
+        double status = 0.0;
+        const bool hasStatus = JsonGetNumber(line, "status", status);
+        reply.ok = hasStatus ? (static_cast<int>(status) == 1 || static_cast<int>(status) == 2) : true;
+        reply.requestId = JsonGetStringOr(line, "requestId", job.requestId);
+        reply.npcKey = JsonGetStringOr(line, "npcKey", job.npcKey);
+        reply.npcName = JsonGetStringOr(line, "npcName", job.npcName);
+        reply.text = JsonGetStringOr(line, "text");
+        reply.error = JsonGetStringOr(line, "error");
+        reply.playerText = JsonGetStringOr(line, "playerText");
+        reply.nonPositionalAudio = ToLowerAscii(reply.npcKey) == "todd" || job.nonPositionalHint;
+        std::string gmObj;
+        if (JsonGetObject(line, "gameMaster", gmObj))
+        {
+            reply.gameMasterAction = ToUpperAscii(JsonGetStringOr(gmObj, "action"));
+            double conf = 0.0;
+            reply.gameMasterConfidence = JsonGetNumber(gmObj, "confidence", conf) ? conf : 0.0;
+            reply.gameMasterShouldTrigger = JsonGetBool(gmObj, "shouldTrigger", false);
+            reply.actionNpcKey = JsonGetStringOr(gmObj, "npcKey");
+            reply.actionNpcName = JsonGetStringOr(gmObj, "npcName");
+        }
+        if (!reply.error.empty() && !hasStatus)
+        {
+            reply.ok = false;
+        }
+        std::lock_guard<std::mutex> lock(g_httpMutex);
+        if (generation != g_httpActiveGeneration)
+        {
+            return;
+        }
+        g_httpInbox.sawActivity = true;
+        if (!reply.playerText.empty())
+        {
+            g_httpInbox.recognizedPlayerText = reply.playerText;
+        }
+        g_httpInbox.reply = std::move(reply);
+        return;
+    }
+
+    if (type == "turn.completed")
+    {
+        std::lock_guard<std::mutex> lock(g_httpMutex);
+        if (generation != g_httpActiveGeneration)
+        {
+            return;
+        }
+        g_httpInbox.sawActivity = true;
+        g_httpInbox.finished = true;
+        return;
+    }
+
+    if (type == "turn.error")
+    {
+        const std::string error = JsonGetStringOr(line, "error", "turn error");
+        std::lock_guard<std::mutex> lock(g_httpMutex);
+        if (generation != g_httpActiveGeneration)
+        {
+            return;
+        }
+        g_httpInbox.sawActivity = true;
+        if (!g_httpInbox.reply.has_value())
+        {
+            HttpPendingReply reply;
+            reply.ok = false;
+            reply.requestId = JsonGetStringOr(line, "requestId", job.requestId);
+            reply.npcKey = job.npcKey;
+            reply.npcName = job.npcName;
+            reply.error = error;
+            g_httpInbox.reply = std::move(reply);
+        }
+        g_httpInbox.finished = true;
+        return;
+    }
+}
+
+// Record a transport-level failure (unreachable host, dropped connection) as a
+// status-0 reply so the main thread surfaces it gracefully. Runs on the WORKER thread.
+void RecordHttpTransportFailure(unsigned long long generation, const HttpTurnRequest& job, const std::string& error)
+{
+    std::lock_guard<std::mutex> lock(g_httpMutex);
+    if (generation != g_httpActiveGeneration)
+    {
+        return;
+    }
+    if (!g_httpInbox.reply.has_value())
+    {
+        HttpPendingReply reply;
+        reply.ok = false;
+        reply.requestId = job.requestId;
+        reply.npcKey = job.npcKey;
+        reply.npcName = job.npcName;
+        reply.error = error;
+        g_httpInbox.reply = std::move(reply);
+    }
+    g_httpInbox.finished = true;
+}
+
+// Perform the blocking POST + stream the NDJSON body line-by-line. Runs on the WORKER
+// thread. Never throws into the worker loop; all failures route through
+// RecordHttpTransportFailure.
+void RunHttpTurn(const HttpTurnRequest& job)
+{
+    const unsigned long long generation = job.generation;
+
+    URL_COMPONENTS components{};
+    components.dwStructSize = sizeof(components);
+    wchar_t hostName[256] = { 0 };
+    wchar_t urlPath[2048] = { 0 };
+    components.lpszHostName = hostName;
+    components.dwHostNameLength = static_cast<DWORD>(std::size(hostName));
+    components.lpszUrlPath = urlPath;
+    components.dwUrlPathLength = static_cast<DWORD>(std::size(urlPath));
+
+    const std::wstring wideUrl = Utf8ToWide(job.url);
+    if (!WinHttpCrackUrl(wideUrl.c_str(), 0, 0, &components))
+    {
+        RecordHttpTransportFailure(generation, job, "Bridge URL parse failed.");
+        return;
+    }
+
+    HINTERNET session = WinHttpOpen(L"FNVBridgeNative/1.0",
+        WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session)
+    {
+        RecordHttpTransportFailure(generation, job, "Bridge HTTP session open failed.");
+        return;
+    }
+
+    // Bounded timeouts: the connect/send must be quick (chasm is local). Receive is
+    // generous because TTS can take a while to stream, but still bounded so a hung
+    // backend cannot wedge the worker forever.
+    WinHttpSetTimeouts(session, 5000 /*resolve*/, 5000 /*connect*/, 10000 /*send*/, 120000 /*receive*/);
+
+    HINTERNET connection = WinHttpConnect(session, components.lpszHostName, components.nPort, 0);
+    if (!connection)
+    {
+        WinHttpCloseHandle(session);
+        RecordHttpTransportFailure(generation, job, "Bridge connect failed (is chasm running?).");
+        return;
+    }
+
+    const DWORD secureFlag = (components.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
+    HINTERNET request = WinHttpOpenRequest(connection, L"POST", components.lpszUrlPath,
+        nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, secureFlag);
+    if (!request)
+    {
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        RecordHttpTransportFailure(generation, job, "Bridge request open failed.");
+        return;
+    }
+
+    const wchar_t* headers = L"Content-Type: application/json\r\nAccept: application/x-ndjson\r\n";
+    BOOL sent = WinHttpSendRequest(request, headers, static_cast<DWORD>(-1),
+        const_cast<char*>(job.body.data()), static_cast<DWORD>(job.body.size()),
+        static_cast<DWORD>(job.body.size()), 0);
+    if (!sent)
+    {
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        RecordHttpTransportFailure(generation, job, "Bridge send failed (is chasm running?).");
+        return;
+    }
+
+    if (!WinHttpReceiveResponse(request, nullptr))
+    {
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        RecordHttpTransportFailure(generation, job, "Bridge response receive failed.");
+        return;
+    }
+
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(statusCode);
+    WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+        WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
+    if (statusCode != 0 && statusCode >= 400)
+    {
+        std::ostringstream err;
+        err << "Bridge HTTP " << statusCode << ".";
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        RecordHttpTransportFailure(generation, job, err.str());
+        return;
+    }
+
+    // Stream the body, splitting on newlines as data arrives. Each complete line is a
+    // standalone NDJSON event.
+    std::string pending;
+    bool transportError = false;
+    for (;;)
+    {
+        if (g_httpWorkerStop.load())
+        {
+            transportError = true;
+            break;
+        }
+        DWORD available = 0;
+        if (!WinHttpQueryDataAvailable(request, &available))
+        {
+            transportError = true;
+            break;
+        }
+        if (available == 0)
+        {
+            break; // end of response
+        }
+        std::string buffer(available, '\0');
+        DWORD read = 0;
+        if (!WinHttpReadData(request, buffer.data(), available, &read))
+        {
+            transportError = true;
+            break;
+        }
+        if (read == 0)
+        {
+            break;
+        }
+        pending.append(buffer.data(), read);
+
+        size_t newlinePos;
+        while ((newlinePos = pending.find('\n')) != std::string::npos)
+        {
+            std::string lineText = pending.substr(0, newlinePos);
+            pending.erase(0, newlinePos + 1);
+            if (!lineText.empty() && lineText.back() == '\r')
+            {
+                lineText.pop_back();
+            }
+            // Skip blank lines / whitespace-only keepalives.
+            const std::string trimmed = Trim(lineText);
+            if (trimmed.empty())
+            {
+                continue;
+            }
+            HandleHttpTurnEvent(trimmed, generation, job);
+        }
+
+        // If the turn was already marked finished by a terminal event, stop reading.
+        {
+            std::lock_guard<std::mutex> lock(g_httpMutex);
+            if (generation == g_httpActiveGeneration && g_httpInbox.finished)
+            {
+                break;
+            }
+            if (generation != g_httpActiveGeneration)
+            {
+                break; // superseded
+            }
+        }
+    }
+
+    // Flush any trailing buffered line (response not newline-terminated).
+    {
+        const std::string trimmed = Trim(pending);
+        if (!trimmed.empty())
+        {
+            HandleHttpTurnEvent(trimmed, generation, job);
+        }
+    }
+
+    WinHttpCloseHandle(request);
+    WinHttpCloseHandle(connection);
+    WinHttpCloseHandle(session);
+
+    if (transportError)
+    {
+        RecordHttpTransportFailure(generation, job, "Bridge connection dropped.");
+        return;
+    }
+
+    // Ensure the turn is terminated even if the server closed without a terminal event.
+    std::lock_guard<std::mutex> lock(g_httpMutex);
+    if (generation == g_httpActiveGeneration && !g_httpInbox.finished)
+    {
+        if (!g_httpInbox.reply.has_value())
+        {
+            HttpPendingReply reply;
+            reply.ok = false;
+            reply.requestId = job.requestId;
+            reply.npcKey = job.npcKey;
+            reply.npcName = job.npcName;
+            reply.error = "Bridge closed without a reply.";
+            g_httpInbox.reply = std::move(reply);
+        }
+        g_httpInbox.finished = true;
+    }
+}
+
+void HttpWorkerMain()
+{
+    for (;;)
+    {
+        HttpTurnRequest job;
+        {
+            std::unique_lock<std::mutex> lock(g_httpJobMutex);
+            g_httpJobCv.wait(lock, [] { return g_httpWorkerStop.load() || g_httpPendingJob.has_value(); });
+            if (g_httpWorkerStop.load() && !g_httpPendingJob.has_value())
+            {
+                return;
+            }
+            job = std::move(*g_httpPendingJob);
+            g_httpPendingJob.reset();
+        }
+        RunHttpTurn(job);
+    }
+}
+
+void EnsureHttpWorkerStarted()
+{
+    if (g_httpWorkerStarted.load())
+    {
+        return;
+    }
+    g_httpWorkerStop.store(false);
+    g_httpWorkerThread = std::thread(HttpWorkerMain);
+    g_httpWorkerStarted.store(true);
+}
+
+void ShutdownHttpWorker()
+{
+    if (!g_httpWorkerStarted.load())
+    {
+        return;
+    }
+    g_httpWorkerStop.store(true);
+    g_httpJobCv.notify_all();
+    if (g_httpWorkerThread.joinable())
+    {
+        g_httpWorkerThread.join();
+    }
+    g_httpWorkerStarted.store(false);
+}
+
+// Build the JSON request body for a turn. `audioBase64` is empty for typed text and a
+// base64 WAV for push-to-talk voice input.
+std::string BuildHttpTurnBody(const std::string& requestId, const std::string& npcKey, const std::string& npcName,
+    const std::string& playerText, const LocationSnapshot& location, const std::string& metadataJson,
+    const std::string& audioBase64)
+{
+    std::ostringstream body;
+    body << "{";
+    body << "\"request_id\":" << JsonEscape(requestId);
+    body << ",\"npc_key\":" << JsonEscape(npcKey);
+    body << ",\"npc_name\":" << JsonEscape(npcName);
+    body << ",\"player_text\":" << JsonEscape(playerText);
+    body << ",\"want_tts\":true";
+    body << ",\"location\":{";
+    body << "\"cell\":" << JsonEscape(location.cell);
+    body << ",\"worldspace\":" << JsonEscape(location.worldspace);
+    body << ",\"region\":" << JsonEscape(location.region);
+    body << ",\"major\":" << JsonEscape(location.major);
+    body << ",\"minor\":" << JsonEscape(location.minor);
+    body << "}";
+    // metadataJson is already a JSON object literal (or empty). Embed it verbatim.
+    const std::string trimmedMeta = Trim(metadataJson);
+    if (!trimmedMeta.empty() && trimmedMeta.front() == '{')
+    {
+        body << ",\"metadata\":" << trimmedMeta;
+    }
+    else
+    {
+        body << ",\"metadata\":{}";
+    }
+    if (!audioBase64.empty())
+    {
+        body << ",\"audio_base64\":" << JsonEscape(audioBase64);
+    }
+    body << "}";
+    return body.str();
+}
+
+// Reset the inbox and dispatch a turn to the worker. Bumps the active generation so any
+// in-flight worker output for a prior turn is discarded. Runs on the GAME thread.
+void DispatchHttpTurn(const std::string& requestId, const std::string& npcKey, const std::string& npcName,
+    const std::string& body, bool nonPositionalHint)
+{
+    EnsureHttpWorkerStarted();
+
+    unsigned long long generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_httpMutex);
+        generation = ++g_httpActiveGeneration;
+        g_httpInbox = HttpInbox{}; // clear any leftover state from a prior turn
+    }
+
+    HttpTurnRequest job;
+    job.generation = generation;
+    job.requestId = requestId;
+    job.npcKey = npcKey;
+    job.npcName = npcName;
+    job.nonPositionalHint = nonPositionalHint;
+    std::ostringstream url;
+    url << "http://" << g_debugConfig.httpHost << ":" << g_debugConfig.httpPort << g_debugConfig.httpTurnPath;
+    job.url = url.str();
+    job.body = body;
+
+    {
+        std::lock_guard<std::mutex> lock(g_httpJobMutex);
+        g_httpPendingJob = std::move(job);
+    }
+    g_httpJobCv.notify_one();
+
+    LogLine("HTTP turn dispatched for %s (%s) to %s.", npcName.c_str(), requestId.c_str(), url.str().c_str());
+}
+
+// Cancel any in-flight HTTP turn: bump the generation (so worker output is discarded)
+// and clear the inbox. The worker will notice the generation change and stop reading.
+// Runs on the GAME thread (called from reply teardown / interrupts / resets).
+void CancelHttpTurn()
+{
+    std::lock_guard<std::mutex> lock(g_httpMutex);
+    ++g_httpActiveGeneration;
+    g_httpInbox = HttpInbox{};
+}
+
+bool WriteRequest(const std::string& npcKey, const std::string& npcName, const std::string& text, const LocationSnapshot& location, const std::string& metadataJson, bool clearSpeechSidecar, const std::vector<BYTE>* httpVoiceWav, bool nonPositionalHint)
 {
     EnsureBridgeDirectories();
     StopSpeechAnimation();
@@ -6829,6 +7907,51 @@ bool WriteRequest(const std::string& npcKey, const std::string& npcName, const s
     g_state.replyStartedTick = GetTickCount();
     g_state.lastBridgeActivityTick = g_state.replyStartedTick;
     g_state.sawBridgeActivity = false;
+
+    // HTTP transport: POST the turn to chasm and let the worker stream the NDJSON
+    // response into g_httpInbox, which OnMainGameLoop drains. We deliberately do NOT
+    // write any NVBridge request/reply/chunk files in this mode (the per-frame file
+    // polls are also skipped while transport == http).
+    if (g_debugConfig.transport == BridgeTransport::Http)
+    {
+        std::error_code httpEc;
+        // Clear stale staged WAVs from prior HTTP turns so AudioDir() does not grow.
+        if (fs::exists(AudioDir(), httpEc))
+        {
+            for (const auto& entry : fs::directory_iterator(AudioDir(), httpEc))
+            {
+                if (entry.is_regular_file() && entry.path().filename().string().rfind("http_", 0) == 0)
+                {
+                    fs::remove(entry.path(), httpEc);
+                }
+            }
+        }
+
+        std::string audioBase64;
+        if (httpVoiceWav && !httpVoiceWav->empty())
+        {
+            audioBase64 = EncodeBase64(httpVoiceWav->data(), httpVoiceWav->size());
+        }
+
+        const std::string body = BuildHttpTurnBody(g_state.activeRequestId, npcKey, npcName, text, location, metadataJson, audioBase64);
+        DispatchHttpTurn(g_state.activeRequestId, npcKey, npcName, body, nonPositionalHint);
+
+        TraceRequestEvent(g_state.activeRequestId, "http_turn_dispatched",
+            {
+                { "npc_key", npcKey },
+                { "npc_name", npcName },
+                { "location_major", location.major },
+                { "location_minor", location.minor },
+                { "location_cell", location.cell },
+                { "has_targeting_metadata", metadataJson.empty() ? "0" : "1" },
+                { "has_voice_audio", audioBase64.empty() ? "0" : "1" },
+            },
+            {
+                { "player_text_length", static_cast<double>(text.size()) },
+            });
+        WriteRuntimeHeartbeatIfNeeded(true);
+        return true;
+    }
 
     std::error_code ec;
     fs::remove(InboxPath(), ec);
@@ -6896,6 +8019,34 @@ bool WriteVoiceRequest(const std::string& npcKey, const std::string& npcName, co
         return false;
     }
 
+    const std::string metadataJson = adminMode
+        ? BuildAdminVoiceRequestMetadata(GetPlayer())
+        : BuildTextRequestMetadata(GetPlayer(), &speaker);
+
+    // HTTP transport: send the captured WAV inline as audio_base64 instead of writing
+    // the .stt.wav sidecar; the server transcribes it (player_text stays empty).
+    if (g_debugConfig.transport == BridgeTransport::Http)
+    {
+        if (!WriteRequest(npcKey, npcName, "", location, metadataJson, false, &wavBytes, adminMode))
+        {
+            return false;
+        }
+
+        TraceRequestEvent(g_state.activeRequestId, "voice_request_http_dispatched",
+            {
+                { "npc_key", npcKey },
+                { "npc_name", npcName },
+                { "location_major", location.major },
+                { "location_minor", location.minor },
+                { "voice_target", adminMode ? "admin_todd" : "live_chat" },
+            },
+            {
+                { "audio_size_bytes", static_cast<double>(wavBytes.size()) },
+                { "speaker_ref_id", static_cast<double>(speaker.refId) },
+            });
+        return true;
+    }
+
     std::ofstream audioOut(SttInboxAudioPath(), std::ios::binary | std::ios::trunc);
     if (!audioOut)
     {
@@ -6911,9 +8062,6 @@ bool WriteVoiceRequest(const std::string& npcKey, const std::string& npcName, co
         return false;
     }
 
-    const std::string metadataJson = adminMode
-        ? BuildAdminVoiceRequestMetadata(GetPlayer())
-        : BuildTextRequestMetadata(GetPlayer(), &speaker);
     if (!WriteRequest(npcKey, npcName, "", location, metadataJson, false))
     {
         std::error_code ec;
@@ -9831,6 +10979,7 @@ void PlayQueuedAudioChunk()
 void ResetRuntimeState()
 {
     LoadDebugConfigIfNeeded(true);
+    CancelHttpTurn();
     AbortVoiceCapture("runtime_reset_voice", false);
     ReleaseConversationHold("runtime_reset");
     StopSpeechAnimation();
@@ -9902,14 +11051,13 @@ void ResetRuntimeState()
 
 }
 
-void ConsumeReply()
+// Process a terminal/streaming ResponsePayload through the shared reply pipeline
+// (diagnostics, action triggering, final-audio fallback, subtitles, state teardown).
+// Used by both the file transport (ConsumeReply) and the HTTP transport
+// (DrainHttpInbox), so the two paths behave identically once a payload exists.
+void HandleReplyPayload(const ResponsePayload* responsePtr)
 {
-    const auto response = ReadResponse();
-    if (!response.has_value())
-    {
-        return;
-    }
-
+    const auto response = responsePtr;
     std::ostringstream diag;
     diag << "response_ok=" << (response->ok ? 1 : 0) << "\n";
     diag << "response_player_text=" << EscapeForDiag(response->playerText) << "\n";
@@ -10081,6 +11229,110 @@ void ConsumeReply()
     WriteRuntimeHeartbeatIfNeeded(true);
 }
 
+void ConsumeReply()
+{
+    const auto response = ReadResponse();
+    if (!response.has_value())
+    {
+        return;
+    }
+    HandleReplyPayload(&response.value());
+}
+
+// HTTP transport consumer (runs on the GAME thread each frame while awaitingReply).
+// Pulls everything the worker has staged in g_httpInbox and feeds it through the SAME
+// playback / reply pipelines the file transport uses. Audio chunks become normal
+// QueuedAudioChunk entries (already staged to temp WAVs by the worker); the terminal
+// reply is converted to a ResponsePayload and handed to HandleReplyPayload (which is
+// what fires actions, plays any final audio, shows subtitles, and tears down state).
+void DrainHttpInbox()
+{
+    std::deque<QueuedAudioChunk> audioChunks;
+    std::deque<HttpPendingAction> actions;
+    std::optional<HttpPendingReply> reply;
+    bool sawActivity = false;
+
+    {
+        std::lock_guard<std::mutex> lock(g_httpMutex);
+        audioChunks.swap(g_httpInbox.audioChunks);
+        actions.swap(g_httpInbox.actions);
+        sawActivity = g_httpInbox.sawActivity;
+        g_httpInbox.sawActivity = false;
+        // The reply is consumed once: take it but leave finished as-is.
+        if (g_httpInbox.reply.has_value())
+        {
+            reply = std::move(g_httpInbox.reply);
+            g_httpInbox.reply.reset();
+        }
+    }
+
+    if (sawActivity)
+    {
+        g_state.lastBridgeActivityTick = GetTickCount();
+        g_state.sawBridgeActivity = true;
+    }
+
+    // Stage streamed audio chunks into the shared playback queue (mirror ConsumeAudioChunks).
+    for (auto& chunk : audioChunks)
+    {
+        if (chunk.requestId != g_state.activeRequestId || chunk.chunkIndex <= g_state.lastAudioChunkIndex)
+        {
+            std::error_code rmEc;
+            fs::remove(chunk.wavPath, rmEc);
+            continue;
+        }
+        g_state.lastAudioChunkIndex = chunk.chunkIndex;
+        g_state.streamedAudioSeenForReply = true;
+        g_state.pendingAudioChunks.push_back(std::move(chunk));
+    }
+
+    // Standalone action events are advisory: the terminal reply's gameMaster field is
+    // authoritative and HandleReplyPayload fires it (matching the file outbox), so we
+    // only trace these to avoid double-triggering.
+    for (const auto& action : actions)
+    {
+        TraceRequestEvent(action.requestId, "http_action_event_seen",
+            {
+                { "action", action.action },
+                { "npc_key", action.actionNpcKey.empty() ? action.npcKey : action.actionNpcKey },
+            },
+            {
+                { "confidence", action.confidence },
+            },
+            {
+                { "should_trigger", action.shouldTrigger },
+            });
+    }
+
+    if (!reply.has_value())
+    {
+        return;
+    }
+
+    // Convert the captured reply into a ResponsePayload and run the shared pipeline.
+    ResponsePayload payload{};
+    payload.ok = reply->ok;
+    payload.statusCode = reply->ok ? 1 : 0;
+    payload.isFinal = true;
+    payload.requestId = reply->requestId.empty() ? g_state.activeRequestId : reply->requestId;
+    payload.npcKey = reply->npcKey;
+    payload.npcName = reply->npcName;
+    payload.text = reply->text;
+    payload.error = reply->error;
+    payload.playerText = reply->playerText;
+    // The HTTP path streams audio via chunks; there is no separate final audio file.
+    payload.audioFile = reply->audioFile;
+    payload.audioChunkIndex = g_state.lastAudioChunkIndex;
+    payload.nonPositionalAudio = reply->nonPositionalAudio;
+    payload.gameMasterAction = reply->gameMasterAction;
+    payload.gameMasterConfidence = reply->gameMasterConfidence;
+    payload.gameMasterShouldTrigger = reply->gameMasterShouldTrigger;
+    payload.actionNpcKey = reply->actionNpcKey;
+    payload.actionNpcName = reply->actionNpcName;
+
+    HandleReplyPayload(&payload);
+}
+
 bool HasPendingChunkFiles()
 {
     std::error_code ec;
@@ -10126,6 +11378,7 @@ void RecoverStaleReplyState()
 
     LogLine("Recovering stale bridge reply state for request %s after %lu ms without new bridge activity.", g_state.activeRequestId.c_str(), static_cast<unsigned long>(timeoutMs));
     ShowHudMessage("Recovered a stale bridge reply state.");
+    CancelHttpTurn();
     ReleaseConversationHold("stale_reply_recovered");
     g_state.awaitingReply = false;
     g_state.awaitingVoiceReply = false;
@@ -11161,13 +12414,24 @@ void OnMainGameLoop()
         return;
     }
 
+    const bool httpTransport = g_debugConfig.transport == BridgeTransport::Http;
     LARGE_INTEGER _pc0;
     QueryPerformanceCounter(&_pc0);
     if (g_state.awaitingReply
         || (g_debugConfig.drainQueuedChunksAfterFinal
-            && (!g_state.pendingAudioChunks.empty() || HasPendingChunkFiles())))
+            && (!g_state.pendingAudioChunks.empty() || (!httpTransport && HasPendingChunkFiles()))))
     {
-        ConsumeAudioChunks();
+        if (httpTransport)
+        {
+            // The worker feeds staged chunks + the terminal reply into g_httpInbox.
+            // DrainHttpInbox queues the chunks and (when present) runs the reply
+            // pipeline; PlayQueuedAudioChunk then pumps the streaming buffer.
+            DrainHttpInbox();
+        }
+        else
+        {
+            ConsumeAudioChunks();
+        }
         PlayQueuedAudioChunk();
     }
     LARGE_INTEGER _pc1;
@@ -11202,7 +12466,12 @@ void OnMainGameLoop()
 
     if (g_state.awaitingReply)
     {
-        ConsumeReply();
+        if (!httpTransport)
+        {
+            // File transport reads the outbox reply here. In HTTP mode the reply was
+            // already processed by DrainHttpInbox above (the worker feeds it in).
+            ConsumeReply();
+        }
         RecoverStaleReplyState();
     }
 
@@ -11324,10 +12593,18 @@ void HandleNvseMessage(NVSEMessagingInterface::Message* msg)
         break;
 
     case NVSEMessagingInterface::kMessage_ExitToMainMenu:
+        g_state.loadedIntoGame = false;
+        ResetRuntimeState();
+        g_state.pendingLoadSavePath.clear();
+        LogLine("Game session reset.");
+        break;
+
     case NVSEMessagingInterface::kMessage_ExitGame:
         g_state.loadedIntoGame = false;
         ResetRuntimeState();
         g_state.pendingLoadSavePath.clear();
+        // Process is exiting: stop the HTTP worker thread cleanly.
+        ShutdownHttpWorker();
         LogLine("Game session reset.");
         break;
 
