@@ -12716,6 +12716,101 @@ void HandleNvseMessage(NVSEMessagingInterface::Message* msg)
         break;
     }
 }
+
+// Copy the mod-shipped chasm profile bundle out of MO2's virtual filesystem and
+// into the shared bridge folder, where the separate chasm process can read it.
+//   Source: <RuntimeDir>\Data\NVBridge\chasm-profile   (resolves through MO2's VFS)
+//   Dest:   <bridge_root>\chasm-profile
+// Runs once per process. Non-fatal: any failure is logged and never blocks init.
+void StageProfileBundle()
+{
+    static bool s_staged = false;
+    if (s_staged)
+    {
+        return;
+    }
+    s_staged = true;
+
+    std::error_code ec;
+
+    const fs::path source = DataDir() / "NVBridge" / "chasm-profile";
+    if (!fs::exists(source, ec) || !fs::is_directory(source, ec))
+    {
+        LogLine("No chasm profile bundle at %s; skipping staging.", source.string().c_str());
+        return;
+    }
+
+    const fs::path dest = BridgeDir() / "chasm-profile";
+
+    // Optimization: skip the (~12MB) recursive copy when the staged bundle already
+    // matches the shipped one. We compare the bundleVersion in the first profile.json
+    // under each side; if that comparison is uncertain for ANY reason, we fall back
+    // to copying rather than risk shipping a stale bundle.
+    auto readFirstBundleVersion = [&](const fs::path& root) -> std::string {
+        std::error_code lec;
+        for (fs::directory_iterator it(root, lec), end; !lec && it != end; it.increment(lec))
+        {
+            if (!it->is_directory(lec))
+            {
+                continue;
+            }
+            const fs::path profileJson = it->path() / "profile.json";
+            if (!fs::exists(profileJson, lec))
+            {
+                continue;
+            }
+            std::ifstream in(profileJson, std::ios::binary);
+            if (!in)
+            {
+                continue;
+            }
+            const std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            std::string version;
+            if (JsonGetString(body, "bundleVersion", version) && !version.empty())
+            {
+                return version;
+            }
+            double num = 0.0;
+            if (JsonGetNumber(body, "bundleVersion", num))
+            {
+                std::ostringstream os;
+                os << num;
+                return os.str();
+            }
+        }
+        return "";
+    };
+
+    bool shouldCopy = true;
+    if (fs::exists(dest, ec) && fs::is_directory(dest, ec))
+    {
+        const std::string srcVersion = readFirstBundleVersion(source);
+        const std::string dstVersion = readFirstBundleVersion(dest);
+        if (!srcVersion.empty() && !dstVersion.empty() && srcVersion == dstVersion)
+        {
+            shouldCopy = false;
+            LogLine("Profile bundle already staged at %s (bundleVersion %s); skipping copy.",
+                dest.string().c_str(), dstVersion.c_str());
+        }
+    }
+
+    if (!shouldCopy)
+    {
+        return;
+    }
+
+    try
+    {
+        fs::create_directories(dest);
+        fs::copy(source, dest,
+            fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+        LogLine("Staged profile bundle to %s.", dest.string().c_str());
+    }
+    catch (const std::exception& e)
+    {
+        LogLine("Failed to stage profile bundle to %s: %s", dest.string().c_str(), e.what());
+    }
+}
 }
 
 extern "C" __declspec(dllexport) bool NVSEPlugin_Query(const NVSEInterface* nvse, PluginInfo* info)
@@ -12756,6 +12851,7 @@ extern "C" __declspec(dllexport) bool NVSEPlugin_Load(NVSEInterface* nvse)
 
     g_messaging->RegisterListener(g_pluginHandle, "NVSE", HandleNvseMessage);
     EnsureBridgeDirectories();
+    StageProfileBundle();
     EnsureInputCallbackScript();
     EnsureDialoguePlaybackScripts();
     LogLine("FNV bridge native plugin loaded.");
