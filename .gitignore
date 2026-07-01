@@ -17,3 +17,4 @@ native/nvse-plugin/*.lib
 native/nvse-plugin/*.obj
 native/nvse-plugin/*.pdb
 native/nvse-plugin/*.ilk
+__pycache__/

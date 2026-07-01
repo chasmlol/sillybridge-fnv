@@ -1,25 +1,28 @@
 {
     "id": "fallout-new-vegas",
     "name": "Fallout: New Vegas",
-    "description": "Goodsprings starting area for Fallout: New Vegas. Ships with the Chasm Bridge FNV mod: the Goodsprings NPC roster as character cards, a unified Mojave/Goodsprings lorebook, the FNV action and quest books, and the generated entity/item spawn catalogs. Drop this folder into chasm (or let the mod copy it in) and the Goodsprings cast comes to life.",
-    "bundleVersion": 1,
+    "description": "Goodsprings starting area for Fallout: New Vegas. Ships with the Chasm Bridge FNV mod: the Goodsprings NPC roster as character cards, a unified Mojave/Goodsprings lorebook, the FNV action and quest books, and the generated entity/item spawn catalogs. Also carries the FNV voice extractor so chasm can clone each NPC's real in-game voice. Drop this folder into chasm (or let the mod copy it in) and the Goodsprings cast comes to life.",
+    "bundleVersion": 2,
     "game": "fallout-new-vegas",
-    "comment": "Authored game content only. No chat logs, conversation history, live-chat state, voices, embeddings, or save-sync snapshots are bundled — those are per-user runtime data created by chasm on first use. Voice references/clones are configured in chasm, not shipped here.",
+    "comment": "Authored game content + the per-game voice extractor. No chat logs, conversation history, live-chat state, embeddings, or save-sync snapshots are bundled — those are per-user runtime data. Voice CLIPS are not shipped either; extract_voices.py pulls them from the player's own game files when they clone. Named NPCs resolve to their own lines via 'edid'; generic/un-named NPCs use a 'voicetype' override.",
     "voice": {
+        "extractor": "extract_voices.py",
+        "steam_app": "Fallout New Vegas",
         "plugin": "FalloutNV.esm",
-        "extractor": "extract_voices.py"
+        "bsa_relative": "Data\\Fallout - Voices1.bsa",
+        "voice_root": "sound\\voice\\falloutnv.esm"
     },
     "characters": [
-        { "name": "Chet" },
-        { "name": "Doc Mitchell" },
-        { "name": "Easy Pete" },
-        { "name": "Goodsprings settler" },
-        { "name": "Joe Cobb" },
-        { "name": "Powder Ganger" },
-        { "name": "Ringo" },
-        { "name": "Sunny Smiles" },
-        { "name": "Todd" },
-        { "name": "Trudy" },
-        { "name": "Victor" }
+        { "name": "Chet", "edid": "GSChet" },
+        { "name": "Doc Mitchell", "edid": "DocMitchell" },
+        { "name": "Easy Pete", "edid": "GSEasyPete" },
+        { "name": "Goodsprings settler", "voicetype": "MaleAdult03" },
+        { "name": "Joe Cobb", "edid": "GSJoeCobb" },
+        { "name": "Powder Ganger", "voicetype": "MaleAdult05" },
+        { "name": "Ringo", "edid": "GSRingo" },
+        { "name": "Sunny Smiles", "edid": "GSSunnySmiles" },
+        { "name": "Todd", "voicetype": "MaleAdult01Default" },
+        { "name": "Trudy", "edid": "GSTrudy" },
+        { "name": "Victor", "voicetype": "robotvictor" }
     ]
 }
