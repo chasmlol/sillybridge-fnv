@@ -12719,7 +12719,8 @@ void HandleNvseMessage(NVSEMessagingInterface::Message* msg)
 
 // Copy the mod-shipped chasm profile bundle out of MO2's virtual filesystem and
 // into the shared bridge folder, where the separate chasm process can read it.
-//   Source: <RuntimeDir>\Data\NVBridge\chasm-profile   (resolves through MO2's VFS)
+//   Source: <RuntimeDir>\Data\chasm-profile   (MO2 overlays a mod's CONTENTS into
+//           Data, so the bundle lands here beside Data\nvse; resolves via MO2 VFS)
 //   Dest:   <bridge_root>\chasm-profile
 // Runs once per process. Non-fatal: any failure is logged and never blocks init.
 void StageProfileBundle()
@@ -12733,7 +12734,14 @@ void StageProfileBundle()
 
     std::error_code ec;
 
-    const fs::path source = DataDir() / "NVBridge" / "chasm-profile";
+    // MO2 overlays a mod's contents into Data, so the shipped bundle is at
+    // Data\chasm-profile (sibling of Data\nvse). Fall back to a nested
+    // Data\NVBridge\chasm-profile in case of an alternate install layout.
+    fs::path source = DataDir() / "chasm-profile";
+    if (!fs::exists(source, ec) || !fs::is_directory(source, ec))
+    {
+        source = DataDir() / "NVBridge" / "chasm-profile";
+    }
     if (!fs::exists(source, ec) || !fs::is_directory(source, ec))
     {
         LogLine("No chasm profile bundle at %s; skipping staging.", source.string().c_str());
