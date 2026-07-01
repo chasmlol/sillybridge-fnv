@@ -2,7 +2,7 @@
     "id": "fallout-new-vegas",
     "name": "Fallout: New Vegas",
     "description": "Goodsprings starting area for Fallout: New Vegas. Ships with the Chasm Bridge FNV mod: the Goodsprings NPC roster as character cards, a unified Mojave/Goodsprings lorebook, the FNV action and quest books, and the generated entity/item spawn catalogs. Also carries the FNV voice extractor so chasm can clone each NPC's real in-game voice. Drop this folder into chasm (or let the mod copy it in) and the Goodsprings cast comes to life.",
-    "bundleVersion": 2,
+    "bundleVersion": 3,
     "game": "fallout-new-vegas",
     "comment": "Authored game content + the per-game voice extractor. No chat logs, conversation history, live-chat state, embeddings, or save-sync snapshots are bundled — those are per-user runtime data. Voice CLIPS are not shipped either; extract_voices.py pulls them from the player's own game files when they clone. Named NPCs resolve to their own lines via 'edid'; generic/un-named NPCs use a 'voicetype' override.",
     "voice": {
